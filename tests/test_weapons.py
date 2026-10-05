@@ -37,7 +37,7 @@ from test_m3 import FIRE, Lobbyless, hold, m3_config, roster_tickets  # noqa: E4
 from test_match import DATA, SimNet  # noqa: E402
 from test_reconnect import UdpMatchDriver  # noqa: E402
 
-TOZ, AK, REM700 = 12, 13, 14
+TOZ, AK, REM700, TT33 = 12, 13, 14, 18
 AMMO_762, AMMO_545 = 51, 7
 PAINKILLER, TRAP, LIFEBONE, SCOPE = 65, 68, 54, 69
 SELECT1, SELECT2 = 0x1000, 0x2000
@@ -124,6 +124,28 @@ class FullLoadoutTest(unittest.TestCase):
         self.assertEqual(sorted(server.weapons), [7, 10])
         self.assertEqual((server.weapons[10].ammo_slot, server.weapons[7].ammo_slot), (11, 8))
         self.assertEqual((server.reserve[8], server.reserve[11]), (30, 90))
+
+
+class NoAmmoWeaponTest(unittest.TestCase):
+    def test_weapon_without_ammo_spawns_empty_and_cannot_fire(self):
+        """TT-33 in weapon1 and nothing in its ammo slots (a pistol equipped over a rifle
+        whose ammo was moved away). The client's weapon_core::activate leaves m_ammunition
+        NULL, so any round in the magazine or chamber would reach instant_fire's
+        (*m_ammunition).buck_shot() and crash the client."""
+        I = M.ItemInstance
+        slots = {2: I(31, 1000, 100, 0), 4: I(45, 1001, 100, 0), 5: I(25, 1002, 100, 0),
+                 6: I(37, 1003, 100, 0), 7: I(TT33, 1004, 100, 0)}
+        w, a, b = duel_world(slots)
+        pa = w.match.players[0]
+        tt = pa.weapons[7]
+        self.assertEqual((tt.ammo_slot, tt.magazine, tt.chambered), (M.INVALID_SLOT, 0, False))
+        self.assertEqual(a.local["weapons"][7], 0)            # 0x84 ammo_in_magazine
+        b.bot = hold(b.local["position"])
+        sky = a.local["position"]
+        a.bot = lambda c, now: (sky, 0.0, 1.0, FIRE)
+        w.run(3000)
+        self.assertEqual((pa.shots_fired, tt.reload_end_ms), (0, None))
+        self.assertEqual(a.faults + b.faults, [])
 
 
 class WeaponSwitchTest(unittest.TestCase):

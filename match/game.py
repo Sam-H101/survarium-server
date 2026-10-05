@@ -526,11 +526,16 @@ class Match:
                 continue
             winfo = self.data.weapons.get(item.dict_id) or WeaponInfo()
             ammo_slot = ammo_slot_for(slot, slots)
-            clip = self.data.items[slots[ammo_slot].dict_id].clip_size \
-                if ammo_slot != M.INVALID_SLOT else 0
-            magazine = min(winfo.magazine_capacity, clip) if clip else item.condition_or_stack
+            # No ammo in either slot: the client's weapon_core::activate sets m_ammunition to
+            # NULL, so it must spawn empty - a round in the magazine or chamber lets it fire,
+            # and instant_fire dereferences the NULL ammunition (client ACCESS_VIOLATION).
+            no_ammo = ammo_slot == M.INVALID_SLOT
+            clip = 0 if no_ammo else self.data.items[slots[ammo_slot].dict_id].clip_size
+            magazine = 0 if no_ammo else \
+                min(winfo.magazine_capacity, clip) if clip else item.condition_or_stack
             w = C.WeaponSim(slot, item.dict_id, winfo, ammo_slot, magazine,
-                            chambered=winfo.has_chamber and self.data.items[item.dict_id].has_chamber)
+                            chambered=not no_ammo and winfo.has_chamber
+                            and self.data.items[item.dict_id].has_chamber)
             w.ready_ms = 0
             w.shot = self._shot_model(p, slot, winfo)
             w.reset_fire_queue()
