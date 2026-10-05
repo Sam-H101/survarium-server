@@ -48,6 +48,7 @@ log = logging.getLogger("poc.lobby")
 FRAME_TIMEOUT_S = 30.0       # the rest of a frame must follow its length byte within this
 TICKET_MAX_AGE_S = 6 * 3600  # tickets of matches nobody reported finished are dropped after this
 TICKETS_MAX = 20000
+AUTO_AMMO_CLIPS = 4           # magazines per ammo slot when a newly equipped weapon gets ammo
 
 # lobby_client_message_types_enum
 SET_STATUS_READY_FOR_MATCH = 32
@@ -870,6 +871,9 @@ class LobbyConnection:
                 self.relocate(*move)
             for profile_id in {m[0] for m in moves}:
                 self.eject_incompatible_ammo(self.find_profile(profile_id))
+            for profile_id, _, _, _, dst, _ in moves:
+                if dst in (ld.WEAPON1, ld.WEAPON2):
+                    self.attach_ammo(self.find_profile(profile_id), dst)
         except Denied as e:
             self.store.doc["accounts"][self.account_name] = json.loads(snapshot)
             self.deny(INVENTORY_ACTION, str(e))
@@ -943,6 +947,31 @@ class LobbyConnection:
             if ammo and weapon and not self.gd.compatible(weapon["dict_id"], ammo["dict_id"]):
                 del slots[str(ammo_slot)]
                 self.to_storage(ammo)
+
+    def attach_ammo(self, pr: dict | None, weapon_slot: int) -> None:
+        """A weapon just placed in a slot whose ammo slots are both empty takes compatible
+        ammo from storage, AUTO_AMMO_CLIPS magazines per slot (one ammo type per slot).
+        The retail UI does this itself only when a weapon is dragged from storage
+        (PaperDoll.try_autofill_items); buying a weapon onto the slot, or an autofill the
+        weight limit cut to nothing, leaves the weapon with no ammo, which then spawns empty."""
+        if pr is None:
+            return
+        slots, storage = pr["slots"], self.acc["storage"]
+        weapon = slots.get(str(weapon_slot))
+        pair = [s for s, w in ld.AMMO_SLOTS.items() if w == weapon_slot]
+        if weapon is None or any(str(s) in slots for s in pair):
+            return
+        fitting = [d for d in self.gd.ammo_for(weapon["dict_id"])
+                   if any(it["dict_id"] == d for it in storage)]
+        for slot, dict_id in zip(pair, fitting):
+            stack = next(it for it in storage if it["dict_id"] == dict_id)
+            take = min(stack["cond"], AUTO_AMMO_CLIPS * max(1, self.gd.items[dict_id].clip_size))
+            if take < stack["cond"]:
+                stack["cond"] -= take
+                slots[str(slot)] = self.store.new_item(dict_id, take)
+            else:
+                storage.remove(stack)
+                slots[str(slot)] = stack
 
     def to_storage(self, item: dict) -> None:
         storage = self.acc["storage"]

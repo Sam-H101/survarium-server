@@ -1,6 +1,6 @@
 {
  "derived": true,
- "note": "Server-supplied tables the client asks for in query_lobby_info(); not present in resources.db. Wire: u32 count + packed structs.",
+ "note": "Server-supplied tables the client asks for in query_lobby_info(); not present in resources.db. Wire: u32 count + packed structs. items_compatibility rows are (ammo or addon, weapon): the inventory UI's 'ammo for my weapons' filter (PaperDoll.getWeaponComp) looks the weapon up in the list keyed by the ammo's dict id.",
  "profile_slot_restrictions": [
   {
    "slot_dict_id": 0,
@@ -225,118 +225,118 @@
  ],
  "items_compatibility": [
   {
-   "first_item_dict_id": 13,
-   "second_item_dict_id": 7,
+   "first_item_dict_id": 7,
+   "second_item_dict_id": 13,
    "caliber": "5.45x39"
   },
   {
-   "first_item_dict_id": 12,
-   "second_item_dict_id": 51,
+   "first_item_dict_id": 51,
+   "second_item_dict_id": 12,
    "caliber": "7.62x51"
   },
   {
-   "first_item_dict_id": 12,
-   "second_item_dict_id": 52,
+   "first_item_dict_id": 52,
+   "second_item_dict_id": 12,
    "caliber": "7.62x51"
   },
   {
-   "first_item_dict_id": 14,
-   "second_item_dict_id": 51,
+   "first_item_dict_id": 51,
+   "second_item_dict_id": 14,
    "caliber": "7.62x51"
   },
   {
-   "first_item_dict_id": 14,
-   "second_item_dict_id": 52,
+   "first_item_dict_id": 52,
+   "second_item_dict_id": 14,
    "caliber": "7.62x51"
   },
   {
-   "first_item_dict_id": 15,
-   "second_item_dict_id": 22,
+   "first_item_dict_id": 22,
+   "second_item_dict_id": 15,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 15,
-   "second_item_dict_id": 72,
+   "first_item_dict_id": 72,
+   "second_item_dict_id": 15,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 15,
-   "second_item_dict_id": 73,
+   "first_item_dict_id": 73,
+   "second_item_dict_id": 15,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 16,
-   "second_item_dict_id": 22,
+   "first_item_dict_id": 22,
+   "second_item_dict_id": 16,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 16,
-   "second_item_dict_id": 72,
+   "first_item_dict_id": 72,
+   "second_item_dict_id": 16,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 16,
-   "second_item_dict_id": 73,
+   "first_item_dict_id": 73,
+   "second_item_dict_id": 16,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 17,
-   "second_item_dict_id": 22,
+   "first_item_dict_id": 22,
+   "second_item_dict_id": 17,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 17,
-   "second_item_dict_id": 72,
+   "first_item_dict_id": 72,
+   "second_item_dict_id": 17,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 17,
-   "second_item_dict_id": 73,
+   "first_item_dict_id": 73,
+   "second_item_dict_id": 17,
    "caliber": "12mm"
   },
   {
-   "first_item_dict_id": 19,
-   "second_item_dict_id": 53,
+   "first_item_dict_id": 53,
+   "second_item_dict_id": 19,
    "caliber": "9x19"
   },
   {
-   "first_item_dict_id": 19,
-   "second_item_dict_id": 71,
+   "first_item_dict_id": 71,
+   "second_item_dict_id": 19,
    "caliber": "9x19"
   },
   {
-   "first_item_dict_id": 55,
-   "second_item_dict_id": 53,
+   "first_item_dict_id": 53,
+   "second_item_dict_id": 55,
    "caliber": "9x19"
   },
   {
-   "first_item_dict_id": 55,
-   "second_item_dict_id": 71,
+   "first_item_dict_id": 71,
+   "second_item_dict_id": 55,
    "caliber": "9x19"
   },
   {
-   "first_item_dict_id": 64,
-   "second_item_dict_id": 70,
+   "first_item_dict_id": 70,
+   "second_item_dict_id": 64,
    "caliber": "9x18"
   },
   {
-   "first_item_dict_id": 18,
-   "second_item_dict_id": 50,
+   "first_item_dict_id": 50,
+   "second_item_dict_id": 18,
    "caliber": "7.62x25"
   },
   {
-   "first_item_dict_id": 56,
-   "second_item_dict_id": 20,
+   "first_item_dict_id": 20,
+   "second_item_dict_id": 56,
    "caliber": ".357"
   },
   {
-   "first_item_dict_id": 12,
-   "second_item_dict_id": 69,
+   "first_item_dict_id": 69,
+   "second_item_dict_id": 12,
    "caliber": "scope(guess)"
   },
   {
-   "first_item_dict_id": 14,
-   "second_item_dict_id": 69,
+   "first_item_dict_id": 69,
+   "second_item_dict_id": 14,
    "caliber": "scope(guess)"
   }
  ]

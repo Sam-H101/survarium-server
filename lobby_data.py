@@ -212,7 +212,9 @@ class GameData:
 
     def __post_init__(self):
         self.slot_rules: dict[int, tuple[int, ...]] = dict(SLOT_RULES)
-        self._compat_list = [(w, a) for w, ammo in WEAPON_AMMO.items() for a in ammo]
+        # (ammo, weapon): the inventory UI's "ammo for my weapons" filter keys its lookup
+        # by the first id (PaperDoll.getWeaponComp); every other check is symmetric
+        self._compat_list = [(a, w) for w, ammo in WEAPON_AMMO.items() for a in ammo]
         tables = self._json("lobby_static_tables.json")
         if tables:
             rules: dict[int, list[int]] = {}
@@ -287,6 +289,11 @@ class GameData:
 
     def compatibilities(self) -> list[tuple[int, int]]:
         return list(self._compat_list)
+
+    def ammo_for(self, weapon: int) -> list[int]:
+        """Ammo dict ids that fit a weapon, in table order (addons such as scopes excluded)."""
+        return [a for a, w in self._compat_list
+                if w == weapon and self.items[a].category in AMMO_CATEGORIES]
 
     def equippable(self, dict_id: int) -> bool:
         """Some profile slot accepts this item's category (scopes: none does)."""

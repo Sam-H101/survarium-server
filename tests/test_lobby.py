@@ -173,21 +173,78 @@ class TestInventory(LobbyTestBase):
         await c.pump()
         self.assertEqual(m.profiles[0]["slots"][ld.WEAPON1]["id"], vityaz["id"])
         self.assertIn(ak["id"], [it["id"] for it in m.inventory])
-        # 5.45 ammo in weapon1's ammo slot no longer fits the Vityaz: 9x19 does
-        ammo9 = next(it for it in m.inventory if it["dict_id"] == 53)
-        await c.send(pk_move([(pid, ammo9["id"], 53, ld.STORAGE_SLOT, ld.AMMO2_W1, 60)]))
+        # the 5.45 in weapon1's ammo slot no longer fits the Vityaz and goes back to storage;
+        # the 9x19 from storage takes its place (attach_ammo: 4 boxes of 50 = the whole stack)
+        auto = m.profiles[0]["slots"][ld.AMMO1_W1]
+        self.assertEqual((auto["dict_id"], auto["cond"]), (53, 200))
+        self.assertNotIn(53, [it["dict_id"] for it in m.inventory])
+        self.assertIn(7, [it["dict_id"] for it in m.inventory])
+        # slot -> storage splits the stack
+        await c.send(pk_move([(pid, auto["id"], 53, ld.AMMO1_W1, ld.STORAGE_SLOT, 60)]))
         await c.pump(lambda m: m.permitted.count((35, b"")) == 2)
+        await c.pump()
+        self.assertEqual(m.profiles[0]["slots"][ld.AMMO1_W1]["cond"], 140)
+        ammo9 = next(it for it in m.inventory if it["dict_id"] == 53)
+        self.assertEqual(ammo9["cond"], 60)
+        # storage -> the second ammo slot
+        await c.send(pk_move([(pid, ammo9["id"], 53, ld.STORAGE_SLOT, ld.AMMO2_W1, 60)]))
+        await c.pump(lambda m: m.permitted.count((35, b"")) == 3)
         await c.pump()
         slot = m.profiles[0]["slots"][ld.AMMO2_W1]
         self.assertEqual((slot["dict_id"], slot["cond"], slot["amount"]), (53, 60, 60))
-        left = next(it for it in m.inventory if it["dict_id"] == 53)
-        self.assertEqual(left["cond"], 140)
+        self.assertNotIn(53, [it["dict_id"] for it in m.inventory])
         # slot -> storage merges the stack back
         await c.send(pk_move([(pid, slot["id"], 53, ld.AMMO2_W1, ld.STORAGE_SLOT, 60)]))
-        await c.pump(lambda m: m.permitted.count((35, b"")) == 3)
+        await c.pump(lambda m: m.permitted.count((35, b"")) == 4)
         await c.pump()
         self.assertNotIn(ld.AMMO2_W1, m.profiles[0]["slots"])
-        self.assertEqual(next(it for it in m.inventory if it["dict_id"] == 53)["cond"], 200)
+        self.assertEqual(next(it for it in m.inventory if it["dict_id"] == 53)["cond"], 60)
+
+    async def test_equipped_weapon_takes_ammo_from_storage(self):
+        """Buying a weapon onto its slot relocates only the weapon (InventoryList's post-buy
+        relocation; no PaperDoll autofill), so the server attaches compatible ammo. A move
+        batch that already carries ammo (the UI's own autofill) is left as sent."""
+        self.lobby.store.account("tester")["reputation"]["2"] = 800
+        c = await self.client()
+        m = c.m
+        pid = m.profiles[0]["profile_id"]
+        for dict_id, count in ((19, 1), (71, 2)):
+            await c.send(pk_buy(dict_id, count, 2))
+            await c.pump(lambda m: any(it["dict_id"] == dict_id for it in m.inventory))
+            await c.pump()
+        stock = {d: next(it for it in m.inventory if it["dict_id"] == d)["cond"] for d in (53, 71)}
+        vityaz = next(it for it in m.inventory if it["dict_id"] == 19)
+        await c.send(pk_move([(pid, vityaz["id"], 19, ld.STORAGE_SLOT, ld.WEAPON2, 1)]))
+        await c.pump(lambda m: (35, b"") in m.permitted)
+        await c.pump()
+        slots = m.profiles[0]["slots"]
+        got = {s: (slots[s]["dict_id"], slots[s]["cond"]) for s in (ld.AMMO1_W2, ld.AMMO2_W2)}
+        self.assertEqual(got, {ld.AMMO1_W2: (53, min(200, stock[53])),
+                               ld.AMMO2_W2: (71, min(200, stock[71]))})
+        left = {it["dict_id"]: it["cond"] for it in m.inventory if it["dict_id"] in (53, 71)}
+        self.assertEqual({d: left.get(d, 0) for d in (53, 71)},
+                         {d: stock[d] - min(200, stock[d]) for d in (53, 71)})
+        # the 0x23 compatibility table lists (ammo, weapon), as the shop's ammo filter reads it
+        self.assertIn((53, 19), self.gd.compatibilities())
+        self.assertNotIn((19, 53), self.gd.compatibilities())
+
+    async def test_ammo_moved_with_the_weapon_is_not_doubled(self):
+        self.lobby.store.account("tester")["reputation"]["2"] = 800
+        c = await self.client()
+        m = c.m
+        pid = m.profiles[0]["profile_id"]
+        await c.send(pk_buy(19, 1, 2))
+        await c.pump(lambda m: any(it["dict_id"] == 19 for it in m.inventory))
+        await c.pump()
+        vityaz = next(it for it in m.inventory if it["dict_id"] == 19)
+        ammo9 = next(it for it in m.inventory if it["dict_id"] == 53)
+        await c.send(pk_move([(pid, vityaz["id"], 19, ld.STORAGE_SLOT, ld.WEAPON2, 1),
+                              (pid, ammo9["id"], 53, ld.STORAGE_SLOT, ld.AMMO1_W2, 30)]))
+        await c.pump(lambda m: (35, b"") in m.permitted)
+        await c.pump()
+        slots = m.profiles[0]["slots"]
+        self.assertEqual((slots[ld.AMMO1_W2]["dict_id"], slots[ld.AMMO1_W2]["cond"]), (53, 30))
+        self.assertNotIn(ld.AMMO2_W2, slots)
 
     async def test_move_denied(self):
         c = await self.client()

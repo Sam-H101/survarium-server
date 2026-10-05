@@ -112,7 +112,7 @@ class CatalogTest(unittest.TestCase):
     def test_every_weapon_has_ammo_for_sale_and_stats_in_the_match_server(self):
         sold = {d for rows in self.gd.prices.values() for d, _, _ in rows}
         for w in WEAPONS:
-            ammo = [b for a, b in self.gd.compatibilities() if a == w and b != 69]
+            ammo = self.gd.ammo_for(w)
             self.assertTrue(ammo, w)
             self.assertTrue(set(ammo) & sold, (w, ammo))
             info = DATA.weapons[w]
@@ -194,16 +194,13 @@ class ShopGatingTest(LobbyTestBase):
         await c.pump()
         slots = m.profiles[0]["slots"]
         self.assertEqual(slots[ld.WEAPON2]["dict_id"], VITYAZ)
-        self.assertNotIn(ld.AMMO1_W2, slots)
         self.assertTrue(any(it["dict_id"] == 13 for it in m.inventory))
         self.assertTrue(any(it["dict_id"] == 7 and it["cond"] >= 120 for it in m.inventory))
-        ammo = next(it for it in m.inventory if it["dict_id"] == 53)
-        await c.send(pk_move([(pid, ammo["id"], 53, ld.STORAGE_SLOT, ld.AMMO1_W2, 90)]))
-        await c.pump(lambda m: m.permitted.count((35, b"")) == 2)
-        await c.pump()
-        self.assertEqual(m.profiles[0]["slots"][ld.AMMO1_W2]["dict_id"], 53)
+        # the 9x19 from storage is attached to the Vityaz (lobby attach_ammo)
+        ammo = slots[ld.AMMO1_W2]
+        self.assertEqual(ammo["dict_id"], 53)
         # the 9x19 pistol round does not fit the 7.62 rifle in weapon 1
-        await c.send(pk_move([(pid, ammo["id"], 53, ld.STORAGE_SLOT, ld.AMMO1_W1, 10)]))
+        await c.send(pk_move([(pid, ammo["id"], 53, ld.AMMO1_W2, ld.AMMO1_W1, 10)]))
         await c.pump(lambda m: m.denied)
         self.assertEqual(m.denied[-1][0], 35)
 
@@ -421,7 +418,7 @@ class EveryWeaponFiresTest(unittest.TestCase):
     def loadout(self, weapon):
         I = M.ItemInstance
         gd = ld.load(EXTRACTED, ld.DATA_DIR)
-        ammo = next(b for a, b in gd.compatibilities() if a == weapon and b != 69)
+        ammo = gd.ammo_for(weapon)[0]
         clip = DATA.items[ammo].clip_size or 1
         return {7: I(weapon, 100, 100, 0), 8: I(ammo, 101, clip, 3 * clip)}
 
