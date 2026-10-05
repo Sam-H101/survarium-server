@@ -1,0 +1,360 @@
+{
+ "source": "survarium.exe .rdata, symbol survarium::player_templates (u16[11][13], seg2:0x14cdc0, file 0x92ffc0); indexed by profile_slot_enum 0..12",
+ "templates": [
+  {
+   "index": 0,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 29,
+     "name_ru": "Кожаная безрукавка"
+    },
+    "pants_slot": {
+     "dict_id": 28,
+     "name_ru": "Джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 41,
+     "name_ru": "Обрезанные перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 36,
+     "name_ru": "Чопперы"
+    },
+    "weapon1_slot": {
+     "dict_id": 12,
+     "name_ru": "ТОЗ-122"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 51,
+     "name_ru": "7.62x51"
+    },
+    "weapon2_slot": {
+     "dict_id": 13,
+     "name_ru": "АКC-74У"
+    },
+    "ammo1_weapon2_slot": {
+     "dict_id": 7,
+     "name_ru": "5.45x39 FMJ"
+    }
+   }
+  },
+  {
+   "index": 1,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 31,
+     "name_ru": "Телогрейка"
+    },
+    "pants_slot": {
+     "dict_id": 45,
+     "name_ru": "Холщевые штаны"
+    },
+    "gloves_slot": {
+     "dict_id": 25,
+     "name_ru": "Байкерские перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 37,
+     "name_ru": "Кожаные ботинки"
+    },
+    "weapon1_slot": {
+     "dict_id": 16,
+     "name_ru": "ТОЗ 34"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 22,
+     "name_ru": "12 мм, 3/0"
+    }
+   }
+  },
+  {
+   "index": 2,
+   "slots": {
+    "mask_slot": {
+     "dict_id": 43,
+     "name_ru": "Респиратор \"Янтарь\""
+    },
+    "torso_slot": {
+     "dict_id": 34,
+     "name_ru": "Куртка Химзащиты"
+    },
+    "back_slot": {
+     "dict_id": 9,
+     "name_ru": "Кислородный балон"
+    },
+    "pants_slot": {
+     "dict_id": 46,
+     "name_ru": "Штаны Химзащиты"
+    },
+    "gloves_slot": {
+     "dict_id": 41,
+     "name_ru": "Обрезанные перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 38,
+     "name_ru": "Сапоги Химзащиты"
+    },
+    "weapon1_slot": {
+     "dict_id": 14,
+     "name_ru": "Remington 700"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 52,
+     "name_ru": "7.62x51 AP"
+    }
+   }
+  },
+  {
+   "index": 3,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 48,
+     "name_ru": "Легкий бронежилет"
+    },
+    "pants_slot": {
+     "dict_id": 47,
+     "name_ru": "Походные штаны"
+    },
+    "gloves_slot": {
+     "dict_id": 42,
+     "name_ru": "Перчатки Химзащиты"
+    },
+    "boots_slot": {
+     "dict_id": 39,
+     "name_ru": "Берцы"
+    },
+    "weapon1_slot": {
+     "dict_id": 19,
+     "name_ru": "Витязь"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 53,
+     "name_ru": "9x19 FMJ"
+    }
+   }
+  },
+  {
+   "index": 4,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 29,
+     "name_ru": "Кожаная безрукавка"
+    },
+    "pants_slot": {
+     "dict_id": 28,
+     "name_ru": "Джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 42,
+     "name_ru": "Перчатки Химзащиты"
+    },
+    "boots_slot": {
+     "dict_id": 24,
+     "name_ru": "Казаки"
+    },
+    "weapon1_slot": {
+     "dict_id": 17,
+     "name_ru": "ТОЗ-66"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 22,
+     "name_ru": "12 мм, 3/0"
+    }
+   }
+  },
+  {
+   "index": 5,
+   "slots": {
+    "helmet_slot": {
+     "dict_id": 27,
+     "name_ru": "Каска байкера"
+    },
+    "torso_slot": {
+     "dict_id": 32,
+     "name_ru": "Куртка \"Громила\""
+    },
+    "pants_slot": {
+     "dict_id": 28,
+     "name_ru": "Джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 25,
+     "name_ru": "Байкерские перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 35,
+     "name_ru": "Роперы"
+    },
+    "weapon1_slot": {
+     "dict_id": 55,
+     "name_ru": "Узи"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 53,
+     "name_ru": "9x19 FMJ"
+    }
+   }
+  },
+  {
+   "index": 6,
+   "slots": {
+    "mask_slot": {
+     "dict_id": 43,
+     "name_ru": "Респиратор \"Янтарь\""
+    },
+    "torso_slot": {
+     "dict_id": 33,
+     "name_ru": "Куртка \"Корсар\""
+    },
+    "back_slot": {
+     "dict_id": 9,
+     "name_ru": "Кислородный балон"
+    },
+    "pants_slot": {
+     "dict_id": 44,
+     "name_ru": "Укрепленные джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 40,
+     "name_ru": "Шипованые перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 36,
+     "name_ru": "Чопперы"
+    },
+    "weapon1_slot": {
+     "dict_id": 13,
+     "name_ru": "АКC-74У"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 7,
+     "name_ru": "5.45x39 FMJ"
+    },
+    "weapon2_slot": {
+     "dict_id": 56,
+     "name_ru": "Colt Python"
+    },
+    "ammo1_weapon2_slot": {
+     "dict_id": 20,
+     "name_ru": ".357 Magnum"
+    }
+   }
+  },
+  {
+   "index": 7,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 31,
+     "name_ru": "Телогрейка"
+    },
+    "pants_slot": {
+     "dict_id": 47,
+     "name_ru": "Походные штаны"
+    },
+    "gloves_slot": {
+     "dict_id": 25,
+     "name_ru": "Байкерские перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 37,
+     "name_ru": "Кожаные ботинки"
+    },
+    "weapon1_slot": {
+     "dict_id": 15,
+     "name_ru": "Remington 870"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 22,
+     "name_ru": "12 мм, 3/0"
+    }
+   }
+  },
+  {
+   "index": 8,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 29,
+     "name_ru": "Кожаная безрукавка"
+    },
+    "pants_slot": {
+     "dict_id": 44,
+     "name_ru": "Укрепленные джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 42,
+     "name_ru": "Перчатки Химзащиты"
+    },
+    "boots_slot": {
+     "dict_id": 36,
+     "name_ru": "Чопперы"
+    },
+    "weapon1_slot": {
+     "dict_id": 56,
+     "name_ru": "Colt Python"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 20,
+     "name_ru": ".357 Magnum"
+    }
+   }
+  },
+  {
+   "index": 9,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 48,
+     "name_ru": "Легкий бронежилет"
+    },
+    "pants_slot": {
+     "dict_id": 28,
+     "name_ru": "Джинсы"
+    },
+    "gloves_slot": {
+     "dict_id": 40,
+     "name_ru": "Шипованые перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 24,
+     "name_ru": "Казаки"
+    },
+    "weapon1_slot": {
+     "dict_id": 17,
+     "name_ru": "ТОЗ-66"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 22,
+     "name_ru": "12 мм, 3/0"
+    }
+   }
+  },
+  {
+   "index": 10,
+   "slots": {
+    "torso_slot": {
+     "dict_id": 33,
+     "name_ru": "Куртка \"Корсар\""
+    },
+    "pants_slot": {
+     "dict_id": 46,
+     "name_ru": "Штаны Химзащиты"
+    },
+    "gloves_slot": {
+     "dict_id": 41,
+     "name_ru": "Обрезанные перчатки"
+    },
+    "boots_slot": {
+     "dict_id": 37,
+     "name_ru": "Кожаные ботинки"
+    },
+    "weapon1_slot": {
+     "dict_id": 64,
+     "name_ru": "Форт 17"
+    },
+    "ammo1_weapon1_slot": {
+     "dict_id": 70,
+     "name_ru": "9x18"
+    }
+   }
+  }
+ ]
+}

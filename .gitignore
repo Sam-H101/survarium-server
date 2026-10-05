@@ -1,0 +1,11 @@
+# runtime output and per-install state
+logs/
+state/
+*.log
+__pycache__/
+*.pyc
+
+# extracted game assets: build them from your own Survarium install (see README "Level collision")
+match/data/level_03.collision
+match/data/*.collision
+match/data/view_animation_angles.json

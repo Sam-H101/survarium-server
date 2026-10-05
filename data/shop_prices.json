@@ -1,0 +1,468 @@
+{
+ "proposed": true,
+ "note": "No prices ship with the client: they come from the lobby (q_price_items, per faction). Wire reply: u8 faction_id, u16 count, count x price_item{u16 item_dict_id, u16 cost, u8 reputation_level, u8 pad} = 6 bytes each (reader memcpy's count*sizeof(price_item)). reputation_level indexes factions_dict levels. UI shows count=10 per row (hard-coded). Weapons: every weapon is sold by trader 1 or 2 (the retail shop lists only those) and unlocks at the reputation_level shown (tools/gen_shop_prices.py, lobby_data.WEAPON_OFFERS).",
+ "service_prices": {
+  "reroll_cost": 1000,
+  "add_profile_cost": 5000,
+  "rename_account_cost": 2000
+ },
+ "factions": {
+  "1": [
+   {
+    "item_dict_id": 7,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "5.45x39 FMJ"
+   },
+   {
+    "item_dict_id": 9,
+    "cost": 500,
+    "reputation_level": 0,
+    "name_ru": "Кислородный балон"
+   },
+   {
+    "item_dict_id": 16,
+    "cost": 1500,
+    "reputation_level": 0,
+    "name_ru": "ТОЗ 34"
+   },
+   {
+    "item_dict_id": 18,
+    "cost": 800,
+    "reputation_level": 0,
+    "name_ru": "ТТ-33"
+   },
+   {
+    "item_dict_id": 20,
+    "cost": 15,
+    "reputation_level": 0,
+    "name_ru": ".357 Magnum"
+   },
+   {
+    "item_dict_id": 22,
+    "cost": 12,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 3/0"
+   },
+   {
+    "item_dict_id": 31,
+    "cost": 600,
+    "reputation_level": 0,
+    "name_ru": "Телогрейка"
+   },
+   {
+    "item_dict_id": 37,
+    "cost": 300,
+    "reputation_level": 0,
+    "name_ru": "Кожаные ботинки"
+   },
+   {
+    "item_dict_id": 41,
+    "cost": 200,
+    "reputation_level": 0,
+    "name_ru": "Обрезанные перчатки"
+   },
+   {
+    "item_dict_id": 43,
+    "cost": 300,
+    "reputation_level": 0,
+    "name_ru": "Респиратор \"Янтарь\""
+   },
+   {
+    "item_dict_id": 45,
+    "cost": 400,
+    "reputation_level": 0,
+    "name_ru": "Холщевые штаны"
+   },
+   {
+    "item_dict_id": 49,
+    "cost": 500,
+    "reputation_level": 0,
+    "name_ru": "Рюкзак с контейнером"
+   },
+   {
+    "item_dict_id": 50,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "7.62x25"
+   },
+   {
+    "item_dict_id": 51,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "7.62x51"
+   },
+   {
+    "item_dict_id": 52,
+    "cost": 24,
+    "reputation_level": 0,
+    "name_ru": "7.62x51 AP"
+   },
+   {
+    "item_dict_id": 53,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "9x19 FMJ"
+   },
+   {
+    "item_dict_id": 64,
+    "cost": 600,
+    "reputation_level": 0,
+    "name_ru": "Форт 17"
+   },
+   {
+    "item_dict_id": 65,
+    "cost": 50,
+    "reputation_level": 0,
+    "name_ru": "Обезболивающее"
+   },
+   {
+    "item_dict_id": 66,
+    "cost": 50,
+    "reputation_level": 0,
+    "name_ru": "Набор бинтов"
+   },
+   {
+    "item_dict_id": 67,
+    "cost": 50,
+    "reputation_level": 0,
+    "name_ru": "Аптечка"
+   },
+   {
+    "item_dict_id": 68,
+    "cost": 150,
+    "reputation_level": 0,
+    "name_ru": "Ловушка"
+   },
+   {
+    "item_dict_id": 70,
+    "cost": 8,
+    "reputation_level": 0,
+    "name_ru": "9x18"
+   },
+   {
+    "item_dict_id": 71,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "9x19 HP"
+   },
+   {
+    "item_dict_id": 72,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "12 мм, жекан"
+   },
+   {
+    "item_dict_id": 73,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 2/0"
+   },
+   {
+    "item_dict_id": 17,
+    "cost": 1800,
+    "reputation_level": 1,
+    "name_ru": "ТОЗ-66"
+   },
+   {
+    "item_dict_id": 34,
+    "cost": 1200,
+    "reputation_level": 1,
+    "name_ru": "Куртка Химзащиты"
+   },
+   {
+    "item_dict_id": 38,
+    "cost": 600,
+    "reputation_level": 1,
+    "name_ru": "Сапоги Химзащиты"
+   },
+   {
+    "item_dict_id": 42,
+    "cost": 400,
+    "reputation_level": 1,
+    "name_ru": "Перчатки Химзащиты"
+   },
+   {
+    "item_dict_id": 46,
+    "cost": 800,
+    "reputation_level": 1,
+    "name_ru": "Штаны Химзащиты"
+   },
+   {
+    "item_dict_id": 15,
+    "cost": 2800,
+    "reputation_level": 2,
+    "name_ru": "Remington 870"
+   },
+   {
+    "item_dict_id": 39,
+    "cost": 900,
+    "reputation_level": 2,
+    "name_ru": "Берцы"
+   },
+   {
+    "item_dict_id": 47,
+    "cost": 1200,
+    "reputation_level": 2,
+    "name_ru": "Походные штаны"
+   },
+   {
+    "item_dict_id": 48,
+    "cost": 1800,
+    "reputation_level": 2,
+    "name_ru": "Легкий бронежилет"
+   }
+  ],
+  "2": [
+   {
+    "item_dict_id": 7,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "5.45x39 FMJ"
+   },
+   {
+    "item_dict_id": 12,
+    "cost": 3000,
+    "reputation_level": 0,
+    "name_ru": "ТОЗ-122"
+   },
+   {
+    "item_dict_id": 13,
+    "cost": 2500,
+    "reputation_level": 0,
+    "name_ru": "АКC-74У"
+   },
+   {
+    "item_dict_id": 20,
+    "cost": 15,
+    "reputation_level": 0,
+    "name_ru": ".357 Magnum"
+   },
+   {
+    "item_dict_id": 22,
+    "cost": 12,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 3/0"
+   },
+   {
+    "item_dict_id": 24,
+    "cost": 300,
+    "reputation_level": 0,
+    "name_ru": "Казаки"
+   },
+   {
+    "item_dict_id": 25,
+    "cost": 200,
+    "reputation_level": 0,
+    "name_ru": "Байкерские перчатки"
+   },
+   {
+    "item_dict_id": 27,
+    "cost": 400,
+    "reputation_level": 0,
+    "name_ru": "Каска байкера"
+   },
+   {
+    "item_dict_id": 28,
+    "cost": 400,
+    "reputation_level": 0,
+    "name_ru": "Джинсы"
+   },
+   {
+    "item_dict_id": 29,
+    "cost": 600,
+    "reputation_level": 0,
+    "name_ru": "Кожаная безрукавка"
+   },
+   {
+    "item_dict_id": 50,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "7.62x25"
+   },
+   {
+    "item_dict_id": 51,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "7.62x51"
+   },
+   {
+    "item_dict_id": 52,
+    "cost": 24,
+    "reputation_level": 0,
+    "name_ru": "7.62x51 AP"
+   },
+   {
+    "item_dict_id": 53,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "9x19 FMJ"
+   },
+   {
+    "item_dict_id": 69,
+    "cost": 1200,
+    "reputation_level": 0,
+    "name_ru": null
+   },
+   {
+    "item_dict_id": 70,
+    "cost": 8,
+    "reputation_level": 0,
+    "name_ru": "9x18"
+   },
+   {
+    "item_dict_id": 71,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "9x19 HP"
+   },
+   {
+    "item_dict_id": 72,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "12 мм, жекан"
+   },
+   {
+    "item_dict_id": 73,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 2/0"
+   },
+   {
+    "item_dict_id": 32,
+    "cost": 1200,
+    "reputation_level": 1,
+    "name_ru": "Куртка \"Громила\""
+   },
+   {
+    "item_dict_id": 35,
+    "cost": 600,
+    "reputation_level": 1,
+    "name_ru": "Роперы"
+   },
+   {
+    "item_dict_id": 40,
+    "cost": 400,
+    "reputation_level": 1,
+    "name_ru": "Шипованые перчатки"
+   },
+   {
+    "item_dict_id": 44,
+    "cost": 800,
+    "reputation_level": 1,
+    "name_ru": "Укрепленные джинсы"
+   },
+   {
+    "item_dict_id": 54,
+    "cost": 2000,
+    "reputation_level": 1,
+    "name_ru": null
+   },
+   {
+    "item_dict_id": 55,
+    "cost": 3500,
+    "reputation_level": 1,
+    "name_ru": "Узи"
+   },
+   {
+    "item_dict_id": 56,
+    "cost": 3000,
+    "reputation_level": 1,
+    "name_ru": "Colt Python"
+   },
+   {
+    "item_dict_id": 14,
+    "cost": 5000,
+    "reputation_level": 2,
+    "name_ru": "Remington 700"
+   },
+   {
+    "item_dict_id": 19,
+    "cost": 4500,
+    "reputation_level": 2,
+    "name_ru": "Витязь"
+   },
+   {
+    "item_dict_id": 33,
+    "cost": 1800,
+    "reputation_level": 2,
+    "name_ru": "Куртка \"Корсар\""
+   },
+   {
+    "item_dict_id": 36,
+    "cost": 900,
+    "reputation_level": 2,
+    "name_ru": "Чопперы"
+   }
+  ],
+  "3": [
+   {
+    "item_dict_id": 7,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "5.45x39 FMJ"
+   },
+   {
+    "item_dict_id": 20,
+    "cost": 15,
+    "reputation_level": 0,
+    "name_ru": ".357 Magnum"
+   },
+   {
+    "item_dict_id": 22,
+    "cost": 12,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 3/0"
+   },
+   {
+    "item_dict_id": 50,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "7.62x25"
+   },
+   {
+    "item_dict_id": 51,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "7.62x51"
+   },
+   {
+    "item_dict_id": 52,
+    "cost": 24,
+    "reputation_level": 0,
+    "name_ru": "7.62x51 AP"
+   },
+   {
+    "item_dict_id": 53,
+    "cost": 10,
+    "reputation_level": 0,
+    "name_ru": "9x19 FMJ"
+   },
+   {
+    "item_dict_id": 70,
+    "cost": 8,
+    "reputation_level": 0,
+    "name_ru": "9x18"
+   },
+   {
+    "item_dict_id": 71,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "9x19 HP"
+   },
+   {
+    "item_dict_id": 72,
+    "cost": 16,
+    "reputation_level": 0,
+    "name_ru": "12 мм, жекан"
+   },
+   {
+    "item_dict_id": 73,
+    "cost": 14,
+    "reputation_level": 0,
+    "name_ru": "12 мм, 2/0"
+   }
+  ],
+  "4": []
+ }
+}

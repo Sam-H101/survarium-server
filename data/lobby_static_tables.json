@@ -1,0 +1,343 @@
+{
+ "derived": true,
+ "note": "Server-supplied tables the client asks for in query_lobby_info(); not present in resources.db. Wire: u32 count + packed structs.",
+ "profile_slot_restrictions": [
+  {
+   "slot_dict_id": 0,
+   "category_dict_id": 1
+  },
+  {
+   "slot_dict_id": 1,
+   "category_dict_id": 2
+  },
+  {
+   "slot_dict_id": 2,
+   "category_dict_id": 3
+  },
+  {
+   "slot_dict_id": 3,
+   "category_dict_id": 4
+  },
+  {
+   "slot_dict_id": 4,
+   "category_dict_id": 5
+  },
+  {
+   "slot_dict_id": 5,
+   "category_dict_id": 6
+  },
+  {
+   "slot_dict_id": 6,
+   "category_dict_id": 7
+  },
+  {
+   "slot_dict_id": 8,
+   "category_dict_id": 9
+  },
+  {
+   "slot_dict_id": 9,
+   "category_dict_id": 9
+  },
+  {
+   "slot_dict_id": 11,
+   "category_dict_id": 9
+  },
+  {
+   "slot_dict_id": 12,
+   "category_dict_id": 9
+  },
+  {
+   "slot_dict_id": 13,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 14,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 15,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 16,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 17,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 18,
+   "category_dict_id": 10
+  },
+  {
+   "slot_dict_id": 13,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 14,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 15,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 16,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 17,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 18,
+   "category_dict_id": 11
+  },
+  {
+   "slot_dict_id": 13,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 14,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 15,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 16,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 17,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 18,
+   "category_dict_id": 12
+  },
+  {
+   "slot_dict_id": 7,
+   "category_dict_id": 13
+  },
+  {
+   "slot_dict_id": 10,
+   "category_dict_id": 13
+  },
+  {
+   "slot_dict_id": 7,
+   "category_dict_id": 14
+  },
+  {
+   "slot_dict_id": 10,
+   "category_dict_id": 14
+  },
+  {
+   "slot_dict_id": 7,
+   "category_dict_id": 15
+  },
+  {
+   "slot_dict_id": 10,
+   "category_dict_id": 15
+  },
+  {
+   "slot_dict_id": 7,
+   "category_dict_id": 16
+  },
+  {
+   "slot_dict_id": 10,
+   "category_dict_id": 16
+  },
+  {
+   "slot_dict_id": 7,
+   "category_dict_id": 17
+  },
+  {
+   "slot_dict_id": 10,
+   "category_dict_id": 17
+  },
+  {
+   "slot_dict_id": 8,
+   "category_dict_id": 18
+  },
+  {
+   "slot_dict_id": 9,
+   "category_dict_id": 18
+  },
+  {
+   "slot_dict_id": 11,
+   "category_dict_id": 18
+  },
+  {
+   "slot_dict_id": 12,
+   "category_dict_id": 18
+  },
+  {
+   "slot_dict_id": 8,
+   "category_dict_id": 19
+  },
+  {
+   "slot_dict_id": 9,
+   "category_dict_id": 19
+  },
+  {
+   "slot_dict_id": 11,
+   "category_dict_id": 19
+  },
+  {
+   "slot_dict_id": 12,
+   "category_dict_id": 19
+  },
+  {
+   "slot_dict_id": 8,
+   "category_dict_id": 20
+  },
+  {
+   "slot_dict_id": 9,
+   "category_dict_id": 20
+  },
+  {
+   "slot_dict_id": 11,
+   "category_dict_id": 20
+  },
+  {
+   "slot_dict_id": 12,
+   "category_dict_id": 20
+  },
+  {
+   "slot_dict_id": 8,
+   "category_dict_id": 21
+  },
+  {
+   "slot_dict_id": 9,
+   "category_dict_id": 21
+  },
+  {
+   "slot_dict_id": 11,
+   "category_dict_id": 21
+  },
+  {
+   "slot_dict_id": 12,
+   "category_dict_id": 21
+  }
+ ],
+ "items_compatibility": [
+  {
+   "first_item_dict_id": 13,
+   "second_item_dict_id": 7,
+   "caliber": "5.45x39"
+  },
+  {
+   "first_item_dict_id": 12,
+   "second_item_dict_id": 51,
+   "caliber": "7.62x51"
+  },
+  {
+   "first_item_dict_id": 12,
+   "second_item_dict_id": 52,
+   "caliber": "7.62x51"
+  },
+  {
+   "first_item_dict_id": 14,
+   "second_item_dict_id": 51,
+   "caliber": "7.62x51"
+  },
+  {
+   "first_item_dict_id": 14,
+   "second_item_dict_id": 52,
+   "caliber": "7.62x51"
+  },
+  {
+   "first_item_dict_id": 15,
+   "second_item_dict_id": 22,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 15,
+   "second_item_dict_id": 72,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 15,
+   "second_item_dict_id": 73,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 16,
+   "second_item_dict_id": 22,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 16,
+   "second_item_dict_id": 72,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 16,
+   "second_item_dict_id": 73,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 17,
+   "second_item_dict_id": 22,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 17,
+   "second_item_dict_id": 72,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 17,
+   "second_item_dict_id": 73,
+   "caliber": "12mm"
+  },
+  {
+   "first_item_dict_id": 19,
+   "second_item_dict_id": 53,
+   "caliber": "9x19"
+  },
+  {
+   "first_item_dict_id": 19,
+   "second_item_dict_id": 71,
+   "caliber": "9x19"
+  },
+  {
+   "first_item_dict_id": 55,
+   "second_item_dict_id": 53,
+   "caliber": "9x19"
+  },
+  {
+   "first_item_dict_id": 55,
+   "second_item_dict_id": 71,
+   "caliber": "9x19"
+  },
+  {
+   "first_item_dict_id": 64,
+   "second_item_dict_id": 70,
+   "caliber": "9x18"
+  },
+  {
+   "first_item_dict_id": 18,
+   "second_item_dict_id": 50,
+   "caliber": "7.62x25"
+  },
+  {
+   "first_item_dict_id": 56,
+   "second_item_dict_id": 20,
+   "caliber": ".357"
+  },
+  {
+   "first_item_dict_id": 12,
+   "second_item_dict_id": 69,
+   "caliber": "scope(guess)"
+  },
+  {
+   "first_item_dict_id": 14,
+   "second_item_dict_id": 69,
+   "caliber": "scope(guess)"
+  }
+ ]
+}

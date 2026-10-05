@@ -1,0 +1,104 @@
+{
+ "build_seconds": 12.7,
+ "bullet_filter": {
+  "ray_group": 16,
+  "ray_mask": 8
+ },
+ "cell": 1.0,
+ "cell_items": 1535699,
+ "level": "level_03",
+ "min_x": -467.0,
+ "min_z": -443.0,
+ "nx": 908,
+ "nz": 841,
+ "source": "projects/level_03/client_project collision_objects",
+ "spawn_check": {
+  "drop_max": 0.187,
+  "drop_mean": 0.016,
+  "drop_min": -0.048,
+  "ground_found": 43,
+  "no_ground": [],
+  "points": 43,
+  "within_2m": 43
+ },
+ "stats": {
+  "bullet_visible_objects": 1185,
+  "by_kind": {
+   "character": {
+    "objects": 21,
+    "triangles": 6204
+   },
+   "flora": {
+    "objects": 511,
+    "triangles": 81147
+   },
+   "generic": {
+    "objects": 14,
+    "triangles": 9058
+   },
+   "item": {
+    "objects": 2,
+    "triangles": 48
+   },
+   "level": {
+    "objects": 49,
+    "triangles": 191740
+   },
+   "props": {
+    "objects": 564,
+    "triangles": 151181
+   },
+   "terrain": {
+    "objects": 9,
+    "triangles": 18414
+   },
+   "test_object": {
+    "objects": 1,
+    "triangles": 12
+   },
+   "vehicle": {
+    "objects": 12,
+    "triangles": 129971
+   }
+  },
+  "collision_objects_total": 1858,
+  "degenerate_triangles_dropped": 130,
+  "models_without_geometry": {
+   "resources/models/props/electric/soviet_comp_01.model/collision": 2
+  },
+  "objects_with_geometry": 1183,
+  "objects_with_mesh": 801,
+  "objects_with_primitives": 748,
+  "objects_without_geometry": 2,
+  "triangles_by_material": {
+   "asphalt": 12,
+   "brick": 2970,
+   "cloth": 336,
+   "concrete": 56664,
+   "foliage": 48323,
+   "glass": 4138,
+   "glass_hard": 96,
+   "grass": 16230,
+   "ground": 2774,
+   "metal_arm_gran_not_path": 3024,
+   "metal_arm_gran_pass": 834,
+   "metall_thick": 201816,
+   "metall_thin": 102889,
+   "paper": 56,
+   "plastic": 4516,
+   "rabitz": 10968,
+   "restrictor": 216,
+   "rubber": 5232,
+   "stone": 13202,
+   "unknown": 4100,
+   "wood_silent": 101347,
+   "wood_squeak": 1884,
+   "wood_tin": 6018
+  },
+  "triangles_unknown_material": 4100,
+  "unique_collision_models": 342,
+  "walker_only_objects_skipped": 673
+ },
+ "triangles": 587645,
+ "version": 1
+}
