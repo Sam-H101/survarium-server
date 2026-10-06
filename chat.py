@@ -130,6 +130,11 @@ class ChatConnection:
     subscriptions: list[int] = field(default_factory=lambda: [0] * MAX_CHANNEL)
     closed: bool = False
     online_shown: int | None = None     # the last #pc value this client got
+    # friend list pushes (FriendsPresence): the client asked for its list at least once,
+    # CC 05 answers whose C4 07 poll has not come back yet, a change it has not seen
+    friends_queried: bool = False
+    friend_polls: int = 0
+    friends_dirty: bool = False
 
     def send(self, payload: bytes) -> None:
         if self.closed or self.writer.is_closing():
@@ -202,6 +207,7 @@ class ChatServer:
         self.conns: list[ChatConnection] = []
         self._local_ids: dict[str, int] = {}
         self._count_timer: asyncio.TimerHandle | None = None
+        self._present: set[str] = set()     # accounts with a live chat connection
 
     # --- identity -----------------------------------------------------------------------
     def account_id(self, account: str) -> int:
@@ -278,6 +284,7 @@ class ChatServer:
             if conn.account:
                 log.debug("%s: %r left chat (%d online)", conn.peer, conn.account, len(self.signed_in()))
                 self.online_changed()
+                self.presence_changed(conn.account)
 
     def drop_session(self, session_id: int) -> None:
         """The login server signed this session out: close its chat connections."""
@@ -331,6 +338,7 @@ class ChatServer:
         conn.send(bytes([SIGNED_IN]) + pstr(self.wire_name(name), NAME_MAX))
         self.send_online_count(conn, self.online_count())
         self.online_changed()
+        self.presence_changed(conn.account)
 
     def on_subscriptions(self, conn: ChatConnection, rd: Reader) -> None:
         conn.subscriptions = list(rd.r(f"{MAX_CHANNEL}I"))
@@ -478,17 +486,54 @@ class ChatServer:
                 self.system(c, line)
 
     # --- 0xC4 ---------------------------------------------------------------------------
+    # --- friends' online status ---------------------------------------------------------
+    def friend_list_answer(self, account: str) -> bytes:
+        rows = self.rows(self.friends.list("friends", account))
+        body = b"".join(struct.pack("<I", aid) + pstr(self.wire_name(nick), NAME_MAX)
+                        + bytes([bool(self.online(acc))]) for acc, aid, nick in rows)
+        return bytes([FRIENDSHIP_ANSWER, QUERY_FRIEND_LIST]) + struct.pack("<H", len(rows)) + body
+
+    def send_friend_list(self, conn: ChatConnection) -> None:
+        """CC 05. Every one makes lobby_menu register its 10 s friends-status timer, which
+        sends C4 07 when it fires: until then a second CC 05 would register it twice."""
+        conn.send(self.friend_list_answer(conn.account))
+        conn.friends_queried = True
+        conn.friend_polls += 1
+        conn.friends_dirty = False
+
+    def presence_changed(self, account: str) -> None:
+        """An account came online (its first chat connection) or went offline (its last).
+        Friends that have it in their list get a fresh CC 05, the only answer that redraws
+        the list (CC 07 updates the flags silently, spec 12.5): at once if their status
+        timer is idle, else right after its C4 07 poll."""
+        now = bool(self.online(account))
+        if now == (account in self._present):
+            return
+        (self._present.add if now else self._present.discard)(account)
+        for c in self.signed_in():
+            if c.account == account or not c.friends_queried \
+                    or account not in self.friends.doc["friends"].get(c.account, ()):
+                continue
+            if c.friend_polls == 0:
+                self.send_friend_list(c)
+            else:
+                c.friends_dirty = True
+        log.debug("chat: %r is %s", account, "online" if now else "offline")
+
     def on_friendship(self, conn: ChatConnection, rd: Reader) -> None:
         action = rd.r("B")
         me = conn.account
         if action == QUERY_FRIEND_LIST:
-            rows = self.rows(self.friends.list("friends", me))
-            body = b"".join(struct.pack("<I", aid) + pstr(self.wire_name(nick), NAME_MAX)
-                            + bytes([bool(self.online(acc))]) for acc, aid, nick in rows)
-        elif action == UPDATE_FRIENDS_STATUS:
+            return self.send_friend_list(conn)
+        if action == UPDATE_FRIENDS_STATUS:
+            conn.friend_polls = max(0, conn.friend_polls - 1)   # the client's timer fired
             rows = self.rows(self.friends.list("friends", me))
             body = b"".join(struct.pack("<IB", aid, bool(self.online(acc))) for acc, aid, _ in rows)
-        elif action == QUERY_IGNORE_LIST:
+            conn.send(bytes([FRIENDSHIP_ANSWER, action]) + struct.pack("<H", len(rows)) + body)
+            if conn.friends_dirty and conn.friend_polls == 0:
+                self.send_friend_list(conn)
+            return
+        if action == QUERY_IGNORE_LIST:
             rows = self.rows(self.friends.list("ignores", me))
             body = b"".join(struct.pack("<I", aid) + pstr(self.wire_name(nick), NAME_MAX)
                             for acc, aid, nick in rows)

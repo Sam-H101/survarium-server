@@ -107,7 +107,9 @@ once the lobby is up (it retries every 3 s after a failure, without affecting th
   to reach only your team. In the game view the client shows only match/team lines;
   lobby and private lines appear once you are back in the lobby.
 - Friends, ignore list and player search (lobby menu) work and are saved in
-  `state/chat_state.json`. The online flag is the one at the time the list was fetched.
+  `state/chat_state.json`. When a friend signs in or out, your list is redrawn with the
+  new online flag (at once, or within the client's 10 s friends timer, spec 12.6). The
+  client only knows online/offline: a friend in a match shows as online.
 - Lobby status lines (spec 12.8), carried by chat and never shown as chat: while you
   wait in the match-making window it lists the players you would be matched with in
   their team columns and `n/size` waiting (channel 7, `#+p`/`#-p`/`#q`); the status

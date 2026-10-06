@@ -86,13 +86,20 @@ class ChatModel:
     ignores: list[tuple[int, str]] = field(default_factory=list)
     found: list[tuple[int, str]] = field(default_factory=list)
     friendship_events: list[int] = field(default_factory=list)
+    friend_list_shown: int = 0                # fill_friend_list calls (root.set_friends_list)
+    friend_timer_registered: bool = False     # lobby_menu::m_update_friends_status_handler
+    friend_timer_overlaps: int = 0            # CC 05 while it was registered (scheduler corruption)
     results: list[tuple[int, int]] = field(default_factory=list)
     faults: list[str] = field(default_factory=list)
 
 
 class MockChatClient:
-    def __init__(self):
+    def __init__(self, friend_poll_delay: float | None = None):
+        """friend_poll_delay: emulate lobby_menu's friends-status timer (10 s in the client)
+        that every CC 05 registers and that sends C4 07 when it fires; None = off."""
         self.m = ChatModel()
+        self.friend_poll_delay = friend_poll_delay
+        self._timers: list[asyncio.Task] = []
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.sent: list[bytes] = []
@@ -139,9 +146,21 @@ class MockChatClient:
                 continue
             self.frames.append(payload)
             for pk in self.on_packet(payload):
-                await self.send(pk)
+                if isinstance(pk, tuple):                # ("friends_timer", delay)
+                    self._timers.append(asyncio.create_task(self._friends_timer(pk[1])))
+                else:
+                    await self.send(pk)
+
+    async def _friends_timer(self, delay: float) -> None:
+        """request_friends_status_from_server_impl: unregister, then query_for_friends_status."""
+        await asyncio.sleep(delay)
+        self.m.friend_timer_registered = False
+        if self.writer is not None and not self.writer.is_closing():
+            await self.send(pk_friendship(UPDATE_FRIENDS_STATUS))
 
     async def close(self) -> None:
+        for t in self._timers:
+            t.cancel()
         if self.writer:
             self.writer.close()
             try:
@@ -269,6 +288,12 @@ class MockChatClient:
         out = []
         if action == QUERY_FRIEND_LIST:
             self.m.friends = [(rd.r("I"), rd.r_string(32), bool(rd.r("B"))) for _ in range(rd.r("H"))]
+            self.m.friend_list_shown += 1                # fill_friend_list
+            if self.m.friend_timer_registered:           # register_for_update on a live record
+                self.m.friend_timer_overlaps += 1
+            if self.friend_poll_delay is not None:       # request_friends_status_from_server( 10000 )
+                self.m.friend_timer_registered = True
+                out.append(("friends_timer", self.friend_poll_delay))
         elif action == UPDATE_FRIENDS_STATUS:
             for _ in range(rd.r("H")):
                 aid, online = rd.r("I"), bool(rd.r("B"))

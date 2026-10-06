@@ -390,6 +390,77 @@ class TestFriends(ChatTestBase):
         await a.pump(lambda m: m.friends and not m.friends[0][2])
 
 
+class TestFriendStatus(ChatTestBase):
+    POLL = 0.6          # the client's friends-status timer is 10 s; shortened here
+
+    async def friend_client(self, sid: int) -> MockChatClient:
+        c = MockChatClient(friend_poll_delay=self.POLL)
+        await c.connect("127.0.0.1", self.port, sid, expect_name=SESSIONS[sid])
+        self.clients.append(c)
+        return c
+
+    def online(self, c: MockChatClient) -> dict[str, bool]:
+        return {name: on for _, name, on in c.m.friends}
+
+    async def test_friends_see_sign_in_and_out(self):
+        self.chat.friends.add("friends", "alice", "bob")
+        self.chat.friends.add("friends", "alice", "carol")
+        self.chat.friends.add("friends", "bob", "alice")
+        a = await self.friend_client(1)
+        self.assertEqual(self.online(a), {"bob": False, "carol": False})
+        self.assertTrue(a.m.friend_timer_registered)
+        # bob comes online while alice's status timer runs: her list is redrawn right after
+        # its C4 07 poll, never on top of it
+        b = await self.friend_client(2)
+        self.assertEqual(self.online(b), {"alice": True})
+        await a.pump(lambda m: m.friend_list_shown == 2, timeout=3)
+        self.assertEqual(self.online(a), {"bob": True, "carol": False})
+        self.assertEqual(a.m.friendship_events[-2:], [7, 5])       # the poll, then the redraw
+        # her timer is idle once the poll after that list came back: bob leaving is shown at once
+        await a.pump(lambda m: not m.friend_timer_registered, timeout=3)
+        await a.pump(quiet=0.2)
+        shown = a.m.friend_list_shown
+        await b.close()
+        self.clients.remove(b)
+        await a.pump(lambda m: m.friend_list_shown == shown + 1, timeout=0.5)
+        self.assertEqual(self.online(a), {"bob": False, "carol": False})
+        # carol has no friends of her own: only alice is told
+        c = await self.friend_client(3)
+        await a.pump(lambda m: m.friend_list_shown == shown + 2 and self.online(a)["carol"], timeout=3)
+        await self.settle(a, c)
+        self.assertEqual(c.m.friend_list_shown, 1)
+        for x in (a, c):
+            self.assertEqual(x.m.friend_timer_overlaps, 0)
+        self.assertClean(a, c)
+
+    async def test_second_connection_is_no_change(self):
+        self.chat.friends.add("friends", "alice", "bob")
+        a = await self.friend_client(1)
+        b = await self.friend_client(2)
+        await a.pump(lambda m: m.friend_list_shown == 2, timeout=3)
+        await a.pump(lambda m: not m.friend_timer_registered, timeout=3)
+        await a.pump(quiet=0.2)
+        shown = a.m.friend_list_shown
+        b2 = await self.friend_client(2)                 # bob reconnects (same session)
+        await asyncio.wait_for(b.reader.read(), 3)       # the old connection is closed
+        self.assertTrue(b.reader.at_eof())
+        await a.pump(quiet=0.3)
+        self.assertEqual(a.m.friend_list_shown, shown)    # still online: nothing to redraw
+        await b2.close()
+        self.clients.remove(b2)
+        await a.pump(lambda m: m.friend_list_shown == shown + 1, timeout=1)
+        self.assertEqual(self.online(a), {"bob": False})
+        self.assertEqual(a.m.friend_timer_overlaps, 0)
+
+    async def test_no_push_before_the_client_asked(self):
+        self.chat.friends.add("friends", "alice", "bob")
+        a = await self.client(1)                            # queried at sign-in, no timer emulated
+        sent = len(a.frames)
+        self.chat.presence_changed("nobody")                # not a friend of anyone
+        await self.settle(a)
+        self.assertEqual(len(a.frames), sent)
+
+
 class TestRobustness(ChatTestBase):
     async def test_reconnect(self):
         a, b = await self.client(1), await self.client(2)
