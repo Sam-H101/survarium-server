@@ -17,6 +17,9 @@ recorded fault instead of a crash:
   * 0x83 with a killer/victim outside the roster or an unknown item dict id
     (game_world_ui::on_player_killed dereferences both players and item_by_id)
   * 0x89 / 0x8a body part or damage type unknown to human_hit_params (unchecked lookups)
+  * 0x96-0x99 / 0x9c naming a slot that holds no booby_trap_set (static_cast), a trap
+    index beyond the set's stack size (traps()[index]), placing/inserting a trap that is
+    already in the world or removing one that is not
   * 0x94 / 0x95 while the client has no current player (add/set_victory_points call
     get_current_player()->team()), items/containers out of range, putting an item that is
     already in the world, taking one that is not, or a container take that would pop a
@@ -103,6 +106,9 @@ class MockMatchClient:
         self.finished = False
         self.connected_mask = 0
         self.statuses: List[int] = []
+        # booby traps: (owner, slot, index) -> {"state", "position", "angles"}
+        self.traps: Dict[Tuple[int, int, int], dict] = {}
+        self.trap_events: List[Tuple[int, Tuple[int, int, int]]] = []   # (type, key)
 
     # ------------------------------------------------------------ transport
     def connect(self, now: int) -> None:
@@ -335,6 +341,9 @@ class MockMatchClient:
                     self.fault("user animation state out of range")
         if not r.eof():
             self.fault(f"0x84 has {len(r.data) - r.pos} unread bytes: layout mismatch")
+        # player::remove -> inventory::remove -> booby_trap_set::remove: the player's traps go
+        for key in [k for k in self.traps if k[0] == pid]:
+            del self.traps[key]
         # process_player_respawn: remove() (detaches the current player), insert(), attach
         if pid in self.inserted and self.current == pid:
             self.current = None
@@ -543,6 +552,73 @@ class MockMatchClient:
                     self.fault(f"0x95 puts item {item} that is already in the world")
                 p = self.inserted.get(pid)
                 self.items_world[item] = p["position"] if p else (0.0, 0.0, 0.0)
+
+    # ------------------------------------------------------------ booby traps
+    def _trap_key(self, r: M.Reader, what: str) -> Optional[Tuple[int, int, int]]:
+        pid, slot, index = r.u8(), r.u8(), r.u8()
+        if not self.sent_join:
+            self.fault(f"{what} before 0x42: NULL player")
+            return None
+        if not self._valid_player(pid, what):
+            return None
+        item = self.profiles[pid][0].slots.get(slot) if slot < 19 else None
+        if item is None or item.dict_id not in self.data.traps:
+            self.fault(f"{what}: slot {slot} of player {pid} holds no booby_trap_set "
+                       "(static_cast of another item)")
+            return None
+        if index >= (item.condition_or_stack & 0xFF):
+            self.fault(f"{what}: trap index {index} >= stack size {item.condition_or_stack & 0xFF}")
+            return None
+        return pid, slot, index
+
+    def _h_96(self, r: M.Reader) -> None:
+        key = self._trap_key(r, "0x96")
+        pos, angles = r.float3(), r.float3()
+        if key is None:
+            return
+        if key in self.traps:
+            self.fault(f"0x96 places trap {key} that is already in the world")
+        self.traps[key] = {"state": 1, "position": pos, "angles": angles}
+        self.trap_events.append((0x96, key))
+        weapons = self.inserted.get(key[0], {}).get("weapons", {})
+        if key[1] in weapons:
+            weapons[key[1]] -= 1                       # --m_amount
+            if weapons[key[1]] < 0:
+                self.fault("0x96 with no trap left in the set (m_amount wraps)")
+
+    def _trap_state(self, r: M.Reader, mtype: int, state: Optional[int]) -> None:
+        key = self._trap_key(r, f"0x{mtype:02x}")
+        if key is None:
+            return
+        if key not in self.traps:
+            self.fault(f"0x{mtype:02x} for trap {key} that is not in the world")
+            return
+        self.trap_events.append((mtype, key))
+        if state is None:
+            del self.traps[key]                        # remove_trap
+        else:
+            self.traps[key]["state"] = state
+
+    def _h_97(self, r: M.Reader) -> None:
+        self._trap_state(r, 0x97, None)
+
+    def _h_98(self, r: M.Reader) -> None:
+        self._trap_state(r, 0x98, 2)
+
+    def _h_99(self, r: M.Reader) -> None:
+        self._trap_state(r, 0x99, 3)
+
+    def _h_9c(self, r: M.Reader) -> None:
+        key = self._trap_key(r, "0x9c")
+        state, pos, angles = r.u8(), r.float3(), r.float3()
+        if key is None:
+            return
+        if state > 3:
+            self.fault(f"0x9c trap state {state}")
+        if key in self.traps:
+            self.fault(f"0x9c inserts trap {key} that is already in the world")
+        self.traps[key] = {"state": state, "position": pos, "angles": angles}
+        self.trap_events.append((0x9c, key))
 
     def _h_9e(self, r: M.Reader) -> None:
         if not self.sent_join:

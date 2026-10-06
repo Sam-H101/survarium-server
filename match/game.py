@@ -27,10 +27,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import ballistics as B
 from . import combat as C
+from . import items as I
 from . import level_collision
 from . import messages as M
-from .game_data import (ITEM_ARTEFACT, ITEM_WEAPON, AmmoInfo, GameData, MedkitInfo, Ticket,
-                        WeaponInfo)
+from .game_data import ITEM_ARTEFACT, ITEM_WEAPON, AmmoInfo, GameData, Ticket, WeaponInfo
 from .model import ClientSession, MatchConfig, Player, ammo_slot_for, u32_lt
 
 log = logging.getLogger("match.game")
@@ -52,6 +52,8 @@ WAITING, COUNTDOWN, INPROCESS, FINISHED = "waiting", "countdown", "inprocess", "
 USE_BIT = 0x10000000
 SELECT_WEAPON_BITS = {M.WEAPON1_SLOT: 0x1000, M.WEAPON2_SLOT: 0x2000}
 QUICK_SLOT_DOWN_BITS = [(13 + k, 0x4000 << (2 * k)) for k in range(6)]
+QUICK_SLOT_UP_BITS = [(13 + k, 0x8000 << (2 * k)) for k in range(6)]
+BOOSTER_ENGINEER_USE_TIME = 10       # boosters_enum engineer_use_time_corr_perc_id
 HEADSHOT_PARTS = ("head", "face")
 SILENT_PEER_MS = 3000          # no datagram for this long: stop queueing 0x82 to that peer
 RESPAWN_LOS_BUDGET_S = 0.006   # wall-clock cap of the respawn line-of-sight rays per respawn
@@ -102,6 +104,7 @@ class Match:
         self.empty_since: Optional[int] = None
         self.removed = False
         self._pose_cache: Dict[tuple, tuple] = {}
+        self.traps: Dict[Tuple[int, int, int], I.Trap] = {}     # active booby traps by key
         # victory items (mode 2)
         n = self.items_count
         self.containers: Dict[int, List[int]] = {}
@@ -146,6 +149,22 @@ class Match:
         p.damage = C.DamageModel(self.data.body_parts, self.data.armour_mods(p.ticket.slots),
                                  {b.id: b.value for b in p.ticket.boosters.values()})
         p.active_slot = self.data.active_weapon_slot(p.ticket.slots) or M.WEAPON1_SLOT
+        # The items live as long as the player object: a lifebone goes into passive mode
+        # when the inventory gets its holder (artefact_lifebone_core::holder_assigned), and
+        # the protectors survive damage_model::reset at every spawn.
+        for slot, item in sorted(p.ticket.slots.items()):
+            bone = self.data.lifebones.get(item.dict_id)
+            if bone is not None and 13 <= slot <= 18:
+                if bone.amount != -1:
+                    p.lifebone_left[slot] = max(0, bone.amount)
+                if bone.amount == -1 or bone.amount > 0:
+                    self._lifebone_passive(p, slot, True)
+        tank = p.ticket.slots.get(I.BACK_SLOT)
+        tinfo = self.data.oxygen_tanks.get(tank.dict_id) if tank else None
+        if tinfo is not None:
+            p.oxygen = I.OxygenTank(tinfo.amount_ms, [
+                (e.body_part, C.threshold_protector(e.hit_type, e.hit_coeff, e.threshold))
+                for e in tinfo.influences])
 
     @staticmethod
     def visible(s: ClientSession, p: Player) -> bool:
@@ -180,7 +199,11 @@ class Match:
                     s.send(M.S_SPAWN_PLAYER, self.spawn_message(p).encode())
                     s.send(M.S_PLAYER_VISIBILITY_CHANGED, M.encode_visibility(p.id, False))
         p.has_input = False
-        p.medkits.clear()
+        self._stop_medkits(p)
+        p.defusing = None
+        # the 0x84 above removed the player's traps on every client (player::remove ->
+        # inventory::remove -> booby_trap_set::remove)
+        self._forget_traps(p)
         self._broadcast_connected_mask()
         log.info("match %d: player %d %r %s", self.match_id, p.id, p.ticket.name,
                  "reconnecting" if replaced else "left")
@@ -218,6 +241,10 @@ class Match:
             s.send(M.S_SPAWN_PLAYER, self.spawn_message(p).encode())
             if not p.connected:
                 s.send(M.S_PLAYER_VISIBILITY_CHANGED, M.encode_visibility(p.id, False))
+            # traps placed before this client joined: booby_trap_core::deserialize
+            # inserts them without touching the set's amount (unlike 0x96)
+            for trap in self._traps_of(p):
+                s.send(M.S_GAME_WORLD_OBJECT_STATE, trap.encode_state())
         for other in self.joined_sessions():
             if other is not s and self.visible(other, me):
                 other.send(M.S_SPAWN_PLAYER, self.spawn_message(me).encode())
@@ -269,9 +296,15 @@ class Match:
         rising = u.input.actions_mask & ~prev
         if rising & USE_BIT:
             self._use(p)
+        self._defuse_input(p, u)
         for slot, bit in QUICK_SLOT_DOWN_BITS:
             if rising & bit:
                 self._quick_slot(p, slot)
+        for slot, bit in QUICK_SLOT_UP_BITS:
+            if rising & bit:
+                self._quick_slot_up(p, slot, u)
+        if rising & I.BACK_SLOT_USE_BIT:
+            self._toggle_oxygen(p)
 
     def on_suicide(self, s: ClientSession) -> None:
         p = s.player
@@ -373,6 +406,7 @@ class Match:
                     s.send(M.S_MATCH_WAIT_TIME_CHANGED, M.encode_u32(self._wait_seconds()))
         elif self.state == INPROCESS:
             self._tick_players(now, dt)
+            self._tick_traps(now)
             if self.rules:
                 if now >= self.match_end_ms:
                     self.finish("time is up")
@@ -418,6 +452,8 @@ class Match:
         for p in self.players:
             if p.connected:
                 p.play_ms += dt
+            if p.oxygen is not None and p.oxygen.active:
+                self._tick_oxygen(p, dt)
             if p.alive and p.damage is not None:
                 p.damage.tick(dt, now)
                 self._tick_medkits(p, now, dt)
@@ -441,7 +477,11 @@ class Match:
         p.respawn_at = None
         p.has_input = False
         p.history.clear()
-        p.medkits.clear()
+        self._stop_medkits(p)
+        p.defusing = None
+        # the 0x84 that follows makes every client remove this player's traps
+        # (player::remove -> inventory::remove -> booby_trap_set::remove)
+        self._forget_traps(p)
         p.damage.reset()
         for slot, item in p.ticket.slots.items():
             if self.data.items[item.dict_id].kind == ITEM_WEAPON:
@@ -517,10 +557,14 @@ class Match:
         p.active_slot = self.data.active_weapon_slot(slots) or M.WEAPON1_SLOT
         for slot, item in slots.items():
             info = self.data.items[item.dict_id]
+            # inventory::setup_from_profile: min(stack, what is left in the inventory);
+            # what earlier lives fired or used is gone (unload_to_profile gives back only
+            # the remainder)
+            left = max(0, item.amount_in_inventory - p.used.get(slot, 0))
             if slot in (8, 9, 11, 12):
-                p.reserve[slot] = min(item.condition_or_stack, item.amount_in_inventory)
+                p.reserve[slot] = min(item.condition_or_stack, left)
             elif 13 <= slot <= 18 and info.kind != ITEM_ARTEFACT:
-                p.quick[slot] = min(item.condition_or_stack, item.amount_in_inventory)
+                p.quick[slot] = min(item.condition_or_stack, left)
         for slot, item in slots.items():
             if self.data.items[item.dict_id].kind != ITEM_WEAPON:
                 continue
@@ -715,6 +759,8 @@ class Match:
             w.magazine -= 1
         w.shots_fired += 1
         p.shots_fired += 1
+        if w.ammo_slot != M.INVALID_SLOT:
+            p.used[w.ammo_slot] = p.used.get(w.ammo_slot, 0) + 1
         ammo_item = p.ticket.slots.get(w.ammo_slot)
         ammo = self.data.ammo.get(ammo_item.dict_id) if ammo_item else None
         ammo = ammo or AmmoInfo()
@@ -731,8 +777,16 @@ class Match:
         else:
             dirs = [C.view_direction(u.state.yaw, u.state.pitch)] * ammo.buck_shot
         for direction in dirs:
-            hit = self._trace(p, origin, direction, ammo.distance_m, ap,
+            reach = ammo.distance_m
+            trap = self._shot_trap(origin, direction, reach, ap, math.radians(ammo.ricochet_angle_deg)) \
+                if self.traps else None
+            if trap is not None:
+                reach = trap[0]             # a player in front of the trap takes the round
+            hit = self._trace(p, origin, direction, reach, ap,
                               math.radians(ammo.ricochet_angle_deg))
+            if hit is None and trap is not None:
+                # booby_trap_core::hit -> defuse_completed (defuse_by_hit traps only)
+                self._set_trap_state(trap[1], I.TRAP_DISARMED)
             if hit is not None:
                 victim, part = hit
                 self.apply_hit(p, victim, part, C.DAMAGE_TYPE_BULLET, amount, ap, w.dict_id)
@@ -816,6 +870,11 @@ class Match:
         for part, affect, event in events:
             if affect == C.AFFECT_DEATH:
                 continue                                  # 0x83 handles death
+            if event == C.AFFECT_CANCELING:
+                # a read-only copy ignores "canceling" (body_part_parameters::
+                # apply_affect_by_force handles applying and recalling only): send the
+                # event that removes the affect there
+                event = C.AFFECT_RECALLING
             payload = M.encode_affect_damage_model(p.id, part, affect, event)
             for s in self.joined_sessions():
                 # the victim's own client applies affects itself (type_apply_directly)
@@ -825,7 +884,8 @@ class Match:
     def kill(self, victim: Player, killer: Player, headshot: bool, item_dict_id: int) -> None:
         victim.alive = False
         victim.deaths += 1
-        victim.medkits.clear()
+        self._stop_medkits(victim)
+        victim.defusing = None
         if killer is not victim and killer.team != victim.team:
             killer.kills += 1
         if victim.carrying is not None:
@@ -845,33 +905,317 @@ class Match:
             victim.respawn_at = self.core.now_ms + 1000 * self.config.respawn_time
             victim.respawn_shown = -1
 
-    # ------------------------------------------------------------ medkits
+    # ------------------------------------------------------- quick-slot items
     def _quick_slot(self, p: Player, slot: int) -> None:
+        """inventory::action(slot, key_down = true): the down bit of a quick slot."""
         item = p.ticket.slots.get(slot)
-        info = self.data.medkits.get(item.dict_id) if item else None
-        if info is None or p.quick.get(slot, 0) <= 0:
+        if item is None or not p.alive:
+            return
+        medkit = self.data.medkits.get(item.dict_id)
+        if medkit is not None:
+            self._use_medkit(p, slot, medkit)
+        elif item.dict_id in self.data.lifebones:
+            self._use_lifebone(p, slot)
+        # a booby_trap_set only shows its ghost model on key down
+
+    def _use_medkit(self, p: Player, slot: int, info) -> None:
+        """medkit::action(true): nothing while this slot's medkit is active, else
+        set_active(true) and one item less. set_active registers the damage protectors
+        at once; the delay only holds back the healing (active_tick)."""
+        if any(m.slot == slot for m in p.medkits) or p.quick.get(slot, 0) <= 0:
             return
         p.quick[slot] -= 1
+        p.used[slot] = p.used.get(slot, 0) + 1
         start = self.core.now_ms + info.delay_ms
-        p.medkits.append((start, start + info.activity_time_ms, info))
+        protectors = [(e.body_part, C.threshold_protector(e.hit_type, e.hit_coeff, e.threshold))
+                      for e in info.damage_protection]
+        for part, prot in protectors:
+            p.damage.register_protector(part, prot)
+        p.medkits.append(I.ActiveMedkit(slot, start, start + info.activity_time_ms, info, protectors))
+
+    def _stop_medkits(self, p: Player) -> None:
+        for m in p.medkits:
+            for part, prot in m.protectors:
+                p.damage.unregister_protector(part, prot)
+        p.medkits.clear()
 
     def _tick_medkits(self, p: Player, now: int, dt: int) -> None:
-        """medkit::active_tick, approximated: the influences are spread linearly over
-        activity_time after activation_delay; affects are removed on activation."""
+        """medkit::active_tick: after the delay the affects are removed once, then the
+        influences heal amount/activity_time per second; set_active(false) at the end
+        unregisters the protectors. (add_stamina_regen is not simulated: the server has
+        no stamina model.)"""
         keep = []
-        for start, end, info in p.medkits:
-            assert isinstance(info, MedkitInfo)
-            lo, hi = max(start, now - dt), min(end, now)
-            if now - dt < start <= now:
-                for part, affect in info.remove_affects:
+        for m in p.medkits:
+            lo, hi = max(m.start_ms, now - dt), min(m.end_ms, now)
+            if now - dt < m.start_ms <= now:
+                for part, affect in m.info.remove_affects:
                     p.damage.cancel_affect(part, affect)
             if hi > lo:
-                frac = (hi - lo) / max(1, end - start)
-                for part, amount in info.influences:
+                frac = (hi - lo) / max(1, m.end_ms - m.start_ms)
+                for part, amount in m.info.influences:
                     p.damage.heal(part, amount * frac)
-            if now < end:
-                keep.append((start, end, info))
+            if now < m.end_ms:
+                keep.append(m)
+            else:
+                for part, prot in m.protectors:
+                    p.damage.unregister_protector(part, prot)
         p.medkits = keep
+
+    def _lifebone_passive(self, p: Player, slot: int, on: bool) -> None:
+        """artefact_lifebone_core::switch_passive_mode_impl: one protector per protected
+        part (left/right hand, left/right leg) that blocks hand and leg damage."""
+        if on:
+            prot = p.lifebone_protectors.setdefault(slot, I.lifebone_protector())
+            for part in I.LIFEBONE_PARTS:
+                p.damage.cancel_affect(part, {"left_hand": 3, "right_hand": 3}.get(part, 4))
+                p.damage.register_protector(part, prot)
+            p.damage.drain_events()                      # nothing applied yet at setup
+        else:
+            prot = p.lifebone_protectors.pop(slot, None)
+            if prot is not None:
+                for part in I.LIFEBONE_PARTS:
+                    p.damage.unregister_protector(part, prot)
+
+    def _use_lifebone(self, p: Player, slot: int) -> None:
+        """artefact_lifebone_core::action(true): reset the protected parts (full health,
+        affects dropped); a limited lifebone spends one charge and leaves passive mode
+        when empty. The config's cooldown_ms is never checked by the client."""
+        limited = slot in p.lifebone_left
+        if limited and p.lifebone_left[slot] <= 0:
+            return
+        for part in I.LIFEBONE_PARTS:
+            p.damage.reset_part(part)
+        if limited:
+            p.lifebone_left[slot] -= 1
+            p.used[slot] = p.used.get(slot, 0) + 1
+            if p.lifebone_left[slot] == 0:
+                self._lifebone_passive(p, slot, False)
+
+    def _toggle_oxygen(self, p: Player) -> None:
+        """oxygen_tank::action(true) on the back-slot key: toggle while time is left; the
+        influences are damage protectors (the server deals no intoxication/irradiation,
+        so they only matter if such damage is added)."""
+        tank = p.oxygen
+        if tank is None or tank.amount_ms <= 0:
+            return
+        self._set_oxygen(p, not tank.active)
+
+    def _set_oxygen(self, p: Player, on: bool) -> None:
+        tank = p.oxygen
+        tank.active = on
+        for part, prot in tank.protectors:
+            if on:
+                p.damage.register_protector(part, prot)
+            else:
+                p.damage.unregister_protector(part, prot)
+
+    def _tick_oxygen(self, p: Player, dt: int) -> None:
+        tank = p.oxygen
+        tank.amount_ms -= min(tank.amount_ms, dt)
+        if tank.amount_ms == 0:
+            self._set_oxygen(p, False)
+
+    # ------------------------------------------------------------ booby traps
+    def _traps_of(self, p: Player) -> List[I.Trap]:
+        return [t for t in self.traps.values() if t.owner == p.id]
+
+    def _forget_traps(self, p: Player) -> None:
+        for key in [k for k, t in self.traps.items() if t.owner == p.id]:
+            del self.traps[key]
+        for other in self.players:
+            if other.defusing is not None and other.defusing[0][0] == p.id:
+                other.defusing = None
+
+    def _trap_sessions(self, trap: I.Trap):
+        owner = self.players[trap.owner]
+        return [s for s in self.joined_sessions() if self.visible(s, owner)]
+
+    def _quick_slot_up(self, p: Player, slot: int, u: M.ClientPlayerUpdate) -> None:
+        """The up bit of a quick slot: booby_trap_set::action(false) places a trap
+        (try_place_trap; the networked client leaves that to the server)."""
+        item = p.ticket.slots.get(slot)
+        info = self.data.traps.get(item.dict_id) if item else None
+        if info is None or not p.alive or p.quick.get(slot, 0) <= 0:
+            return
+        capacity = item.condition_or_stack & 0xFF       # booby_trap_set_cook_data.stack_size (u8)
+        used = {t.index for t in self.traps.values() if t.owner == p.id and t.slot == slot}
+        index = next((i for i in range(capacity) if i not in used), None)
+        if index is None:
+            return                                       # find_if found no inactive trap
+        place = self._trap_place(p, u, info)
+        if place is None:
+            return
+        position, angles = place
+        trap = I.Trap(p.id, slot, index, item.dict_id, info, position, angles)
+        p.quick[slot] -= 1
+        p.used[slot] = p.used.get(slot, 0) + 1
+        self.traps[trap.key] = trap
+        self._arm(trap)
+        log.info("match %d: %r places trap %d at %s", self.match_id, p.ticket.name, index,
+                 tuple(round(c, 2) for c in position))
+        payload = trap.encode_placed()
+        for s in self._trap_sessions(trap):
+            s.send(M.S_TRAP_PLACED, payload)
+
+    def _trap_place(self, p: Player, u: M.ClientPlayerUpdate, info):
+        """booby_trap_set_core::get_visible_place_transform: a ray from the head along the
+        view, max_deploy_distance long; the surface must face up within max_slope_angle and
+        its material must accept a mine. Returns (position, angles) or None.
+        [A] the decompiled tests read inverted (they return false on success); this
+        follows their evident intent. The client ray uses the walker collision (group
+        0x404 / mask 0x202), the server cache holds the bullet collision of the same
+        level; the final recover_from_penetrations nudge is not done. Without a level
+        cache the ground is the plane through the player's feet."""
+        actions = u.input.actions_mask
+        crouched = bool(actions & C.CROUCH_BIT)
+        eye = C.eye_position(u.state.position, actions)
+        forward, right = B.aim_frame(u.state.yaw,
+                                     B.VIEW.camera_pitch_deg(u.state.pitch, crouched))
+        if self.collision is not None:
+            hit = self.collision.trace(eye, forward, info.max_distance)
+            if hit is None:
+                return None
+            normal = I.triangle_normal(self.collision, hit.triangle)
+            point = hit.point
+            name = self.collision.material_names.get(hit.material, "")
+            if info.material_can_place_test and name in I.NON_PLACEABLE_MATERIALS:
+                return None
+            if info.material_can_stick_test and name in I.NON_STICKABLE_MATERIALS:
+                return None
+        else:
+            if forward[1] > -1e-6:
+                return None
+            t = (u.state.position[1] - eye[1]) / forward[1]
+            if t > info.max_distance:
+                return None
+            point = (eye[0] + forward[0] * t, u.state.position[1], eye[2] + forward[2] * t)
+            normal = (0.0, 1.0, 0.0)
+        if normal[1] < info.max_slope_cos:
+            return None
+        i, j, k = I.place_matrix(normal, forward, right)
+        return point, I.angles_zxy(i, j, k)
+
+    def _arm(self, trap: I.Trap) -> None:
+        """booby_trap_core::switch_to_state(armed): armed_life_time (0 = no timer)."""
+        trap.state = I.TRAP_ARMED
+        life = trap.info.armed_life_ms
+        trap.timer_end_ms = self.core.now_ms + life if life else None
+
+    def _set_trap_state(self, trap: I.Trap, state: int) -> None:
+        """booby_trap_core::switch_to_state(fired / disarmed): the state timer starts; a
+        zero life time removes the trap at once. 0x98 / 0x99 to every client."""
+        if trap.state != I.TRAP_ARMED or trap.key not in self.traps:
+            return
+        for other in self.players:
+            if other.defusing is not None and other.defusing[0] == trap.key:
+                other.defusing = None
+        life = trap.info.fired_life_ms if state == I.TRAP_FIRED else trap.info.disarmed_life_ms
+        if not life:
+            self._remove_trap(trap)
+            return
+        trap.state = state
+        trap.timer_end_ms = self.core.now_ms + life
+        mtype = M.S_TRAP_FIRED if state == I.TRAP_FIRED else M.S_TRAP_DISARMED
+        log.info("match %d: trap %s %s", self.match_id, trap.key,
+                 "fired" if state == I.TRAP_FIRED else "disarmed")
+        payload = trap.encode_header()
+        for s in self._trap_sessions(trap):
+            s.send(mtype, payload)
+
+    def _remove_trap(self, trap: I.Trap) -> None:
+        self.traps.pop(trap.key, None)
+        payload = trap.encode_header()
+        for s in self._trap_sessions(trap):
+            s.send(M.S_TRAP_REMOVED, payload)
+
+    def _tick_traps(self, now: int) -> None:
+        for trap in list(self.traps.values()):
+            if trap.timer_end_ms is not None and now >= trap.timer_end_ms:
+                # booby_trap_core::on_state_timer_finished
+                if trap.state == I.TRAP_ARMED:
+                    self._set_trap_state(trap, I.TRAP_DISARMED)
+                else:
+                    self._remove_trap(trap)
+                continue
+            if trap.state == I.TRAP_ARMED:
+                self._sense(trap)
+
+    def _sense(self, trap: I.Trap) -> None:
+        """collision_sensor::tick -> booby_trap_core::on_enter: every player entering the
+        sensor takes the damage_parameters hits (initiator = the owner), then the trap
+        fires. [A] the client sensor has no team filter; the owner and his team trigger
+        it only with friendly fire on."""
+        owner = self.players[trap.owner]
+        victims = [v for v in self.players
+                   if v.alive and v.connected and v.has_input
+                   and (self.config.friendly_fire or v.team != owner.team)
+                   and I.feet_in_sensor(trap, v.position)]
+        if not victims:
+            return
+        for v in victims:
+            log.info("match %d: %r steps on the trap of %r", self.match_id, v.ticket.name,
+                     owner.ticket.name)
+            for part, htype, amount, ap in trap.info.damage:
+                if v.alive and v.damage.can_hit(part, htype):
+                    self.apply_hit(owner, v, part, htype, amount, ap, trap.dict_id)
+        self._set_trap_state(trap, I.TRAP_FIRED)
+
+    def _shot_trap(self, origin, direction, reach: float, pierce: float, ricochet: float):
+        """The nearest armed defuse_by_hit trap whose hittable box the round reaches before
+        a wall: (distance, trap) or None. [A] the box is axis aligned and the round stops
+        in it."""
+        best = None
+        for trap in self.traps.values():
+            if trap.state != I.TRAP_ARMED or not trap.info.defuse_by_hit:
+                continue
+            lo, hi = trap.box(trap.info.hittable)
+            t = I.ray_box(origin, direction, lo, hi, reach)
+            if t is not None and (best is None or t < best[0]):
+                best = (t, trap)
+        if best is not None and self.collision is not None and self.collision.trace(
+                origin, direction, best[0], pierce, ricochet, self.config.solid_terrain) is not None:
+            return None
+        return best
+
+    def _defuse_input(self, p: Player, u: M.ClientPlayerUpdate) -> None:
+        """player::detect_usable_objects + booby_trap_core::use_*: while the use bit is
+        held and the 1 m view ray from the head meets an armed trap the player may defuse
+        (its owner or an enemy, can_defuse), the defuse runs for defuse_time x (1 +
+        engineer_use_time booster / 100) of the player's own clock; releasing the key or
+        looking away starts over."""
+        if not u.input.actions_mask & USE_BIT or not self.traps:
+            p.defusing = None
+            return
+        actions = u.input.actions_mask
+        eye = C.eye_position(u.state.position, actions)
+        forward, _ = B.aim_frame(u.state.yaw, B.VIEW.camera_pitch_deg(
+            u.state.pitch, bool(actions & C.CROUCH_BIT)))
+        best = None
+        for trap in self.traps.values():
+            if trap.state != I.TRAP_ARMED:
+                continue
+            lo, hi = trap.box(trap.info.usable)
+            t = I.ray_box(eye, forward, lo, hi, I.USE_DETECTION_M)
+            if t is not None and (best is None or t < best[0]):
+                best = (t, trap)
+        if best is None:
+            p.defusing = None
+            return
+        trap = best[1]
+        owner = self.players[trap.owner]
+        if not (p is owner or p.team != owner.team):
+            p.defusing = None
+            return
+        if p.defusing is None or p.defusing[0] != trap.key:
+            p.defusing = (trap.key, u.time_in_ms)       # use_initialize
+            return
+        boosters = {b.id: b.value for b in p.ticket.boosters.values()}
+        factor = 1.0 + boosters.get(BOOSTER_ENGINEER_USE_TIME, 0.0) / 100.0
+        defuse_ms = int(math.floor(trap.info.defuse_ms * factor))
+        passed = (u.time_in_ms - p.defusing[1]) & 0xFFFFFFFF
+        if defuse_ms == 0 or passed >= defuse_ms:
+            log.info("match %d: %r defuses trap %s", self.match_id, p.ticket.name, trap.key)
+            self._set_trap_state(trap, I.TRAP_DISARMED)
 
     # ------------------------------------------------------- victory items
     def _items_snapshot(self, score_only: bool = False) -> bytes:
@@ -973,7 +1317,19 @@ class Match:
                 "draw": finished and self.winner is None,
                 "present_at_end": finished and p.present_at_end,
                 "kills": p.kills, "deaths": p.deaths, "items_stored": p.items_stored,
-                "play_s": round(p.play_ms / 1000.0, 1)}
+                "play_s": round(p.play_ms / 1000.0, 1), "used": self.used_items(p)}
+
+    def used_items(self, p: Player) -> List[dict]:
+        """Rounds fired and items used per profile slot (never more than the slot held),
+        for the lobby to take out of the account (lobby.LobbyServer.apply_usage)."""
+        out = []
+        for slot, n in sorted(p.used.items()):
+            item = p.ticket.slots.get(slot)
+            if item is None or n <= 0:
+                continue
+            out.append({"slot": slot, "id": item.id, "dict_id": item.dict_id,
+                        "count": min(n, item.amount_in_inventory)})
+        return out
 
     def finish(self, reason: str) -> None:
         if self.state == FINISHED:

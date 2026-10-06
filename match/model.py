@@ -101,7 +101,12 @@ class Player:
     carrying: Optional[int] = None        # victory item index
     history: Deque[Tuple[int, Tuple[float, float, float], float, int]] = field(
         default_factory=lambda: deque(maxlen=64))       # (server ms, pos, yaw, actions)
-    medkits: List[Tuple[int, int, object]] = field(default_factory=list)  # (start, end, info)
+    medkits: List[object] = field(default_factory=list)     # items.ActiveMedkit
+    used: Dict[int, int] = field(default_factory=dict)      # slot -> rounds / items consumed
+    oxygen: Optional[object] = None                         # items.OxygenTank (back slot)
+    lifebone_left: Dict[int, int] = field(default_factory=dict)   # limited lifebones only
+    lifebone_protectors: Dict[int, object] = field(default_factory=dict)   # slot -> protector
+    defusing: Optional[Tuple[Tuple[int, int, int], int]] = None   # (trap key, start client ms)
     shots_fired: int = 0
     hits_dealt: int = 0
     shots_blocked: int = 0                # capsule hits a wall stopped first
