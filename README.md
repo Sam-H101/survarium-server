@@ -313,7 +313,8 @@ every second round failed. After: this version. Both used match size 10, 2 round
   matches at under 10% of its 33 ms budget. Heavy fire with many wall traces (~0.5 ms
   each) is the most expensive part.
 - The lobby, chat and TLS logins share one loop. At 200 players in a burst, login p99 is
-  ~300 ms. A chat line to everyone costs O(players), and the cost grows with chat volume.
+  ~300 ms. The table above predates passwords: each sign-in now also runs one PBKDF2
+  hash (~17 ms of CPU, on a worker thread), which put the 10-player login p50 at 85 ms. A chat line to everyone costs O(players), and the cost grows with chat volume.
 - The lobby state is one JSON document. It is serialized whole (with the C encoder) at most
   once a second, which takes a few ms per 1000 accounts.
 - Windows is the target: there is no uvloop, and there is one UDP port per worker.
