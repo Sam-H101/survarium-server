@@ -97,11 +97,13 @@ class TestSignIn(ChatTestBase):
         self.assertEqual(c.m.friendship_events, [5, 6])
         self.assertClean(c)
 
-    async def test_unknown_session_uses_fallback_account(self):
+    async def test_unknown_session_is_closed(self):
         c = MockChatClient()
-        await c.connect("127.0.0.1", self.port, 999, expect_name="Stalker")
+        c.reader, c.writer = await asyncio.open_connection("127.0.0.1", self.port)
         self.clients.append(c)
-        self.assertClean(c)
+        await c.send(pk_sign_in(999))                     # a session the login never issued
+        self.assertTrue(await c.closed_by_server())
+        self.assertFalse(c.m.connected)
 
 
 class TestLobbyChat(ChatTestBase):

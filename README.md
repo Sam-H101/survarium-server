@@ -1,7 +1,7 @@
 # Survarium v0.100b PoC server
 
-Local server for the original 2013 client. Any username and password signs in. The lobby
-then serves characters, inventory and equipment, the shop, skills, and Play
+Local server for the original 2013 client. The first sign-in of an account name creates
+the account with that password (see Accounts below). The lobby then serves characters, inventory and equipment, the shop, skills, and Play
 (matchmaking, then `connect_to_match_server`). Chat (lobby, match, squad/team and private
 messages, friends and ignore lists) runs in the same process. The protocol comes from the
 binary-matched `vostok` decompilation. Login, browser and keep-alive are documented in
@@ -163,9 +163,29 @@ Ports: TCP 25100, 25101, 25102, 80 and UDP 25100, 25103-25106 (one per match wor
 default `--match-size 2` the match starts when the second one queues (or after
 `--fill-timeout` seconds with whoever is queued).
 
+## Accounts and sessions
+
+- **Passwords:** the first sign-in of a login name creates the account with that password
+  (stored as a salted PBKDF2 hash in `lobby_state.json`); later sign-ins with another
+  password get "invalid user name or password". An account saved by an older version
+  without a password takes the first one used. Five wrong passwords in a row hold the
+  account for 30 s (the client shows "sign in attempt interval violated").
+  `--no-passwords` accepts any password.
+- **Client version:** the login accepts the version string `0.100b` the client sends;
+  anything else gets "invalid version" (`--client-version a,b` or `any` to change).
+- **One session per account:** signing in while the account's previous session still
+  sends its keep-alive (within 10 s) is refused with "user already signed in"; otherwise
+  the new sign-in replaces the old session. Quitting the game signs out (the client sends
+  the session and, over TLS, the password), which drops the session at once.
+- **Unknown sessions:** the lobby answers a session the login server did not issue with
+  `invalid_session_id` and closes (after four tries the client returns to the login
+  screen); chat closes such connections. Sessions live in memory, so after a server
+  restart every client signs in again. `--accept-unknown-sessions` maps unknown sessions
+  to the `--nickname` account instead (tools that skip the login).
+
 ## Lobby data
 
-- **Accounts:** an account is created on its first lobby sign-in, keyed by the login
+- **Accounts:** an account is created on its first sign-in, keyed by the login
   name. Each account gets 3 characters (the client holds at most 3). Their equipment is
   `player_templates[0..2]`, the real starter loadouts recovered from `survarium.exe`.
   Each account also gets a storage stash.
@@ -310,9 +330,14 @@ From `poc-server/`:
   `--no-chat` run checks the `x:0` answer.
 - `tests/chat_mock_client.py` sends the exact bytes of `messaging_client` (including the
   `/key text` parsing and local echo of `on_message_typed`) and parses replies the way
-  `process_incoming_text_message` and the `read_*` helpers do. `tests/test_chat.py`
+  `process_incoming_text_message` and the `read_*` helpers do; channel 7 and 8 lines go
+  through the `lobby_menu_ui.cpp` parsers, whose buffer overflows are faults. `tests/test_chat.py`
   covers sign-in, lobby broadcast, private messages, match and team isolation (also
-  after real matchmaking), friends and ignore lists, reconnect and malformed packets.
+  after real matchmaking), friends and ignore lists, reconnect and malformed packets,
+  the match-making window feed and the online counter.
+- `tests/test_login.py`: passwords (first sign-in, wrong password, legacy accounts,
+  restart, the hold after repeated failures), the version check, already signed in,
+  sign-out with the client's exact bytes, and the lobby/chat answer to unknown sessions.
 - `tests/match_mock_client.py` emulates the client's match handlers and records as a
   fault everything that would crash the original client (spec 4.3 and the M3 rules in
   `docs/match_protocol.md` section 11). `tests/test_match.py` covers transport, codecs and

@@ -2,20 +2,32 @@
 """Minimal proof-of-concept server for the original Survarium v0.100b client.
 
 Goal: let the shipped survarium.exe sign in and get past the login screen.
-Any account name / password is accepted. Protocol taken from the binary-matched
-decompilation (vostok repo):
+The first sign-in of an account name creates the account with that password. Protocol
+taken from the binary-matched decompilation (vostok repo):
 
   sources/vostok/network/sources/login_client_impl_sign_in.cpp   (shipped login client)
+  sources/vostok/network/sources/login_client_impl_sign_out.cpp
   sources/vostok/login_server/message_types.h, constants.h       (enums, ports)
+  sources/vostok/login_server/sources/client_session_sign_*.cpp  (2012 GSC login server)
 
-Login exchange (one TCP connection, TLS is started mid-stream):
+Sign in (one TCP connection, TLS is started mid-stream):
   C->S plain : 0x01 | u8 len | account_name | char version[8] ("0.100b")
-  S->C plain : 0x0B                                   (valid_user_name)
+  S->C plain : 0x0B valid_user_name, or a refusal the client reports and closes on:
+               0x14 sign_in_invalid_version, 0x0A invalid_user_name_or_password (empty
+               name), 0x0C sign_in_attempt_interval_violated (too many wrong passwords)
   -- TLS handshake, client verifies us against resources/ssl/survarium_login_server.crt --
   C->S tls   : u8 len | password
   S->C tls   : 0x08 | u8 len | browser_address | u8 len | initial_query | u32le session_id
-               (servers_connection_info; read with a single 70-byte read_some)
+               (servers_connection_info; read with a single 70-byte read_some), or
+               0x0A (wrong password) / 0x13 sign_in_user_already_signed_in (the account's
+               session still pings) as the first byte of that read
   C->S udp   : u32 session_id every second to <login host>:25100 (no reply expected)
+
+Sign out (network_client::disconnect, a new TCP connection; no answer is read):
+  C->S plain : 0x02 | u32le session_id
+  -- TLS handshake --
+  C->S tls   : u8 len | password          -> the session is dropped if the password is the
+                                             account's; the server then closes
 
 After login the client asks the "server browser" over HTTP (always port 80) where the
 lobby and chat live (network_client.cpp, network_core/sources/http_client.cpp):
@@ -40,6 +52,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import collections
+import hashlib
+import hmac
 import itertools
 import json
 import logging
@@ -60,8 +74,17 @@ SIGN_UP = 0x00
 SIGN_IN = 0x01
 SIGN_OUT = 0x02
 SERVERS_CONNECTION_INFO = 0x08
+INVALID_USER_NAME_OR_PASSWORD = 0x0A
 VALID_USER_NAME = 0x0B
-SIGN_OUT_SUCCESSFUL = 0x0D
+SIGN_IN_ATTEMPT_INTERVAL_VIOLATED = 0x0C
+SIGN_IN_USER_ALREADY_SIGNED_IN = 0x13
+SIGN_IN_INVALID_VERSION = 0x14
+
+CLIENT_VERSIONS = ("0.100b",)   # login_client_impl::sign_in_on_connected: char version[8]
+SESSION_ALIVE_S = 10.0          # a session pinged this recently is signed in (pings: 1/s)
+FAILED_SIGN_INS_MAX = 5         # wrong passwords in a row before the account is held ...
+FAILED_SIGN_IN_HOLD_S = 30.0    # ... for this long (0x0C)
+PBKDF2_ITERATIONS = 20000
 
 LOGIN_UDP_PORT = 25100  # network_ports_enum::login_udp_port (compiled into the client)
 
@@ -97,6 +120,23 @@ class SessionTable(collections.OrderedDict):
         return value
 
 
+def hash_password(password: bytes, salt: bytes | None = None,
+                  iterations: int = PBKDF2_ITERATIONS) -> dict:
+    salt = salt if salt is not None else os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+    return {"scheme": "pbkdf2_sha256", "iterations": iterations, "salt": salt.hex(), "hash": digest.hex()}
+
+
+def check_password(password: bytes, record: dict) -> bool:
+    try:
+        digest = hashlib.pbkdf2_hmac("sha256", password, bytes.fromhex(record["salt"]),
+                                     int(record["iterations"]))
+        return hmac.compare_digest(digest.hex(), record["hash"])
+    except (KeyError, ValueError, TypeError):
+        log.warning("unreadable password record %r", record)
+        return False
+
+
 def make_tls_context(ssl_dir: Path) -> ssl.SSLContext:
     """TLS 1.0 server context: the client is OpenSSL 1.0.0g (no TLS 1.1/1.2)."""
     crt = _pick(ssl_dir, "survarium_login_server", (".crt", ".pem"))
@@ -122,12 +162,68 @@ async def read_exact(reader: asyncio.StreamReader, n: int) -> bytes:
     return await reader.readexactly(n)
 
 
+class MemoryTls:
+    """Server-side TLS over an existing StreamReader/Writer, fed from whatever the reader
+    has buffered (asyncio's start_tls loses bytes that arrived before it was called)."""
+
+    def __init__(self, ctx: ssl.SSLContext, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.reader, self.writer = reader, writer
+        self.incoming, self.outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+        self.obj = ctx.wrap_bio(self.incoming, self.outgoing, server_side=True)
+        self.plain = bytearray()
+
+    async def _flush(self) -> None:
+        data = self.outgoing.read()
+        if data:
+            self.writer.write(data)
+            await self.writer.drain()
+
+    async def _feed(self) -> None:
+        data = await self.reader.read(4096)
+        if not data:
+            raise ConnectionError("closed during TLS")
+        self.incoming.write(data)
+
+    async def handshake(self) -> None:
+        while True:
+            try:
+                self.obj.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                await self._flush()
+                await self._feed()
+        await self._flush()
+
+    async def read_exact(self, n: int) -> bytes:
+        while len(self.plain) < n:
+            try:
+                self.plain += self.obj.read(4096)
+            except ssl.SSLWantReadError:
+                await self._flush()
+                await self._feed()
+            except ssl.SSLZeroReturnError:
+                raise ConnectionError("TLS closed") from None
+        out, self.plain = bytes(self.plain[:n]), self.plain[n:]
+        return out
+
+
 class LoginServer:
+    """``accounts`` (lobby.Store) holds the password hashes; None accepts any password.
+    ``is_alive(session_id)`` tells whether a session still pings (PingSink.alive); None
+    never refuses a sign-in as already signed in. Each ``on_sign_out`` callback gets the
+    session a sign-out dropped (the lobby and chat close what it still has open)."""
+
     def __init__(self, tls: ssl.SSLContext, browser_address: str, initial_query: str,
                  sessions: dict[int, str] | None = None, rate: float = 0.0, burst: float = 40,
-                 max_handshakes: int = 64):
+                 max_handshakes: int = 64, accounts=None, versions: tuple[str, ...] | None = CLIENT_VERSIONS,
+                 is_alive=None):
         self.tls = tls
         self.sessions = sessions if sessions is not None else {}  # session_id -> account (for the lobby)
+        self.accounts = accounts
+        self.versions = versions                    # None: any version string
+        self.is_alive = is_alive
+        self.on_sign_out: list = []
+        self.failures: collections.OrderedDict[str, tuple[int, float]] = collections.OrderedDict()
         self.browser_address = browser_address.encode()
         self.initial_query = initial_query.encode()
         if 1 + 1 + len(self.browser_address) + 1 + len(self.initial_query) + 4 > SIGN_IN_ANSWER_MAX:
@@ -163,11 +259,55 @@ class LoginServer:
         else:
             log.warning("%s: unsupported login message 0x%02x", peer, msg)
 
+    async def refuse(self, writer, peer, code: int, why: str) -> None:
+        log.info("%s: sign in refused (0x%02x): %s", peer, code, why)
+        self.refused += 1
+        writer.write(bytes([code]))
+        await writer.drain()
+
+    def held(self, account: str) -> bool:
+        count, until = self.failures.get(account, (0, 0.0))
+        return count >= FAILED_SIGN_INS_MAX and time.monotonic() < until
+
+    def failed(self, account: str) -> None:
+        count, until = self.failures.pop(account, (0, 0.0))
+        if count >= FAILED_SIGN_INS_MAX and time.monotonic() >= until:
+            count = 0                                  # the hold is over: a fresh series
+        self.failures[account] = (count + 1, time.monotonic() + FAILED_SIGN_IN_HOLD_S)
+        while len(self.failures) > 10000:
+            self.failures.popitem(last=False)
+
+    async def verify_password(self, account: str, password: bytes) -> bool:
+        """The first sign-in of an account (or of one saved before passwords existed) sets its
+        password; later ones must match it."""
+        if self.accounts is None:
+            return True
+        record = self.accounts.password_record(account)
+        if record is not None:
+            return await asyncio.to_thread(check_password, password, record)
+        record = await asyncio.to_thread(hash_password, password)
+        if self.accounts.password_record(account) is not None:      # set meanwhile
+            return await self.verify_password(account, password)
+        self.accounts.set_password(account, record)
+        log.info("account %r: password set by its first sign-in", account)
+        return True
+
+    def sessions_of(self, account: str) -> list[int]:
+        return [sid for sid, acc in list(self.sessions.items()) if acc == account]
+
     async def sign_in(self, reader, writer, peer) -> None:
         name_len = (await read_exact(reader, 1))[0]
         account = (await read_exact(reader, name_len)).decode(errors="replace")
-        version = (await read_exact(reader, 8)).rstrip(b"\0").decode(errors="replace")
+        version = (await read_exact(reader, 8)).split(b"\0", 1)[0].decode(errors="replace")
         log.info("%s: sign in account=%r version=%r", peer, account, version)
+        if self.versions is not None and version not in self.versions:
+            return await self.refuse(writer, peer, SIGN_IN_INVALID_VERSION,
+                                     f"client version {version!r}, expected {', '.join(self.versions)}")
+        if not account.strip():
+            return await self.refuse(writer, peer, INVALID_USER_NAME_OR_PASSWORD, "empty account name")
+        if self.held(account):
+            return await self.refuse(writer, peer, SIGN_IN_ATTEMPT_INTERVAL_VIOLATED,
+                                     f"{account!r}: too many wrong passwords, held for {FAILED_SIGN_IN_HOLD_S:.0f} s")
 
         writer.write(bytes([VALID_USER_NAME]))
         await writer.drain()
@@ -175,7 +315,17 @@ class LoginServer:
         log.debug("%s: TLS up (%s)", peer, writer.get_extra_info("ssl_object").version())
 
         pw_len = (await read_exact(reader, 1))[0]
-        await read_exact(reader, pw_len)  # any password is accepted
+        password = await read_exact(reader, pw_len)
+        if not await self.verify_password(account, password):
+            self.failed(account)
+            return await self.refuse(writer, peer, INVALID_USER_NAME_OR_PASSWORD, f"{account!r}: wrong password")
+        self.failures.pop(account, None)
+        old = self.sessions_of(account)
+        if self.is_alive is not None and any(self.is_alive(sid) for sid in old):
+            return await self.refuse(writer, peer, SIGN_IN_USER_ALREADY_SIGNED_IN,
+                                     f"{account!r} is signed in (session {old}) and still pings")
+        for sid in old:                  # client_session::add_online_user: one session per account
+            self.sessions.pop(sid, None)
 
         session_id = next(_session_ids)
         self.sessions[session_id] = account
@@ -189,11 +339,33 @@ class LoginServer:
                   peer, session_id, self.browser_address, self.initial_query)
 
     async def sign_out(self, reader, writer, peer) -> None:
-        # Best effort: the shipped sign-out path mirrors sign-in; acknowledge and close.
-        data = await reader.read(256)
-        log.info("%s: sign out (%d bytes)", peer, len(data))
-        writer.write(bytes([SIGN_OUT_SUCCESSFUL]))
-        await writer.drain()
+        """login_client_impl_sign_out.cpp: [02][u32 session], a TLS handshake, then the password
+        over TLS; the client reads nothing and closes. As client_session::process_sign_out, an
+        unknown session is closed before the handshake and the session is removed only when
+        the password is the account's (remove_online_user_with_password)."""
+        session_id = struct.unpack("<I", await read_exact(reader, 4))[0]
+        account = self.sessions.get(session_id)
+        if account is None:
+            log.info("%s: sign out of unknown session %d", peer, session_id)
+            return
+        # The client starts the handshake right after its 5 bytes, without waiting for us, so
+        # its ClientHello may already sit in the StreamReader's buffer (start_tls would never
+        # see it): run TLS over the stream through memory BIOs instead.
+        tls = MemoryTls(self.tls, reader, writer)
+        await asyncio.wait_for(tls.handshake(), TLS_HANDSHAKE_TIMEOUT_S)
+        pw_len = (await tls.read_exact(1))[0]
+        password = await tls.read_exact(pw_len)
+        record = self.accounts.password_record(account) if self.accounts is not None else None
+        if record is not None and not await asyncio.to_thread(check_password, password, record):
+            log.warning("%s: sign out of session %d (%r) with a wrong password; ignored", peer, session_id, account)
+            return
+        self.sessions.pop(session_id, None)
+        log.info("%s: %r signed out (session %d)", peer, account, session_id)
+        for callback in self.on_sign_out:
+            try:
+                callback(session_id)
+            except Exception:  # noqa: BLE001 - one service must not keep the others open
+                log.exception("sign-out hook failed for session %d", session_id)
 
 
 class BrowserServer:
@@ -231,18 +403,24 @@ class PingSink(asyncio.DatagramProtocol):
     SEEN_MAX = 20000
 
     def __init__(self):
-        self.seen: set[int] = set()
+        self.last: collections.OrderedDict[int, float] = collections.OrderedDict()  # session -> time
         self.pings = 0
 
     def datagram_received(self, data: bytes, addr) -> None:
         self.pings += 1
         if len(data) == 4:
             sid = struct.unpack("<I", data)[0]
-            if sid not in self.seen:
-                if len(self.seen) >= self.SEEN_MAX:
-                    self.seen.clear()
-                self.seen.add(sid)
+            if sid not in self.last:
                 log.debug("ping from %s session_id=%d (further pings not logged)", addr, sid)
+            self.last[sid] = time.monotonic()
+            self.last.move_to_end(sid)
+            while len(self.last) > self.SEEN_MAX:
+                self.last.popitem(last=False)
+
+    def alive(self, session_id: int) -> bool:
+        """The client pings every second while signed in (login_client_impl::ping)."""
+        seen = self.last.get(session_id)
+        return seen is not None and time.monotonic() - seen < SESSION_ALIVE_S
 
     def error_received(self, exc: Exception) -> None:
         pass
@@ -301,7 +479,8 @@ def build_lobby(args, sessions: dict[int, str]) -> lobby.LobbyServer:
                                   state_dir / "match_tickets.json" if state_dir else None,
                                   match_size=args.match_size, min_players=args.min_players)
     rules = progression.load(args.progression if args.progression.is_file() else None, args.reward_scale)
-    return lobby.LobbyServer(gd, store, matchmaker, sessions, fallback_account=args.nickname,
+    return lobby.LobbyServer(gd, store, matchmaker, sessions,
+                             fallback_account=args.nickname if args.accept_unknown_sessions else None,
                              match_timeout=args.match_timeout, serve_skills_tree=not args.no_skills_tree,
                              rules=rules)
 
@@ -317,7 +496,15 @@ def parse_args(argv=None):
     ap.add_argument("--lobby-port", type=int, default=25101)
     ap.add_argument("--http-port", type=int, default=80, help="the client always uses 80")
     ap.add_argument("--initial-query", default="/sb?v=1", help="client appends &type=..")
-    ap.add_argument("--nickname", default="Stalker", help="lobby account for sessions the login did not issue")
+    ap.add_argument("--accept-unknown-sessions", action="store_true",
+                    help="dev/tools: a lobby or chat sign-in with a session the login server did not "
+                         "issue uses the --nickname account (default: op 49 invalid_session_id)")
+    ap.add_argument("--nickname", default="Stalker", help="account for --accept-unknown-sessions")
+    ap.add_argument("--client-version", default=",".join(CLIENT_VERSIONS),
+                    help="comma-separated client version strings the login accepts ('any' = all); "
+                         "others get 0x14 sign_in_invalid_version")
+    ap.add_argument("--no-passwords", action="store_true",
+                    help="accept any password (the old behaviour); passwords are still not stored")
     lob = ap.add_argument_group("lobby")
     lob.add_argument("--match-server", type=host_port, default=None,
                      help="host:port sent in connect_to_match_server (default <public-host>:25103, "
@@ -507,21 +694,27 @@ async def main(argv=None) -> None:
     runtime.high_resolution_timers()
     runtime.precise_loop_clock()
     sessions = SessionTable()
-    login = LoginServer(make_tls_context(args.ssl_dir), args.public_host, args.initial_query, sessions,
-                        rate=args.login_rate, burst=args.login_burst, max_handshakes=args.max_logins)
+    ping = PingSink()
     lobby_server = build_lobby(args, sessions)
+    versions = None if args.client_version == "any" else tuple(v.strip() for v in args.client_version.split(","))
+    login = LoginServer(make_tls_context(args.ssl_dir), args.public_host, args.initial_query, sessions,
+                        rate=args.login_rate, burst=args.login_burst, max_handshakes=args.max_logins,
+                        accounts=None if args.no_passwords else lobby_server.store, versions=versions,
+                        is_alive=ping.alive)
+    login.on_sign_out.append(lobby_server.drop_session)
     chat_server = None
     if not args.no_chat:
         state_dir = None if args.no_persist else args.state_dir
-        chat_server = chat.ChatServer(sessions, lobby_server, fallback_account=args.nickname,
+        chat_server = chat.ChatServer(sessions, lobby_server,
+                                      fallback_account=args.nickname if args.accept_unknown_sessions else None,
                                       state_path=state_dir / "chat_state.json" if state_dir else None)
+        login.on_sign_out.append(chat_server.drop_session)
         lobby_server.notify = chat_server.notify_match_result
         lobby_server.feed = chat_server.send_feed
     browser = BrowserServer(f"{args.public_host}:{args.lobby_port}",
                             "x:0" if args.no_chat else "%s:%d" % args.chat_address)
 
     loop = asyncio.get_running_loop()
-    ping = PingSink()
     ping_transport, _ = await loop.create_datagram_endpoint(
         lambda: ping, sock=runtime.udp_socket(args.host, args.udp_port))
     guard = ConnectionGuard(args.max_connections)

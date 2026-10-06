@@ -190,10 +190,12 @@ class FriendStore:
 
 class ChatServer:
     def __init__(self, sessions: dict[int, str] | None = None, roster: Roster | None = None,
-                 fallback_account: str = "Stalker", state_path: Path | None = None,
+                 fallback_account: str | None = None, state_path: Path | None = None,
                  codepage: str = "cp1251"):
         self.sessions = sessions if sessions is not None else {}
         self.roster = roster
+        # None: a session the login server did not issue is disconnected without an answer;
+        # a name: such sessions chat as that account (--accept-unknown-sessions)
         self.fallback_account = fallback_account
         self.codepage = codepage
         self.friends = FriendStore(state_path)
@@ -212,7 +214,7 @@ class ChatServer:
         summary = self.roster.account_summary(account) if self.roster else None
         if summary:
             return summary[1]
-        out = "".join(ch for ch in account if ch.isprintable()).strip() or self.fallback_account
+        out = "".join(ch for ch in account if ch.isprintable()).strip() or "Stalker"
         while len(out.encode(self.codepage, errors="replace")) > NAME_MAX:
             out = out[:-1]
         return out
@@ -277,6 +279,13 @@ class ChatServer:
                 log.debug("%s: %r left chat (%d online)", conn.peer, conn.account, len(self.signed_in()))
                 self.online_changed()
 
+    def drop_session(self, session_id: int) -> None:
+        """The login server signed this session out: close its chat connections."""
+        for c in [c for c in self.conns if c.session_id == session_id and not c.closed]:
+            log.info("%s: session %d signed out; closing the chat connection", c.peer, session_id)
+            c.closed = True
+            c.writer.close()
+
     def signed_in(self) -> list[ChatConnection]:
         return [c for c in self.conns if c.account and not c.closed]
 
@@ -299,6 +308,14 @@ class ChatServer:
     def on_sign_in(self, conn: ChatConnection, rd: Reader) -> None:
         sid = rd.r("I")
         client_type = rd.r("B") if rd.p < len(rd.b) else ACCOUNT_CLIENT_TYPE
+        account = self.sessions.get(sid) or self.fallback_account
+        if account is None:
+            # the client has no refusal message (only 0xCB ends its sign-in): close; it
+            # reconnects with the session of its next login
+            log.warning("%s: chat sign in with unknown session_id=%d; closed", conn.peer, sid)
+            conn.closed = True
+            conn.writer.close()
+            return
         # A reconnect after a dead socket: drop older connections of the same session.
         for old in [c for c in self.conns if c is not conn and c.session_id == sid and c.account]:
             log.info("%s: session %d re-signed in from %s; dropping the old chat connection",
@@ -307,7 +324,7 @@ class ChatServer:
             self.conns.remove(old)
             old.writer.close()
         conn.session_id = sid
-        conn.account = self.sessions.get(sid) or self.fallback_account
+        conn.account = account
         name = self.nickname(conn.account)
         log.info("%s: chat sign in session_id=%d type=%d account=%r as %r (%d online)", conn.peer,
                  sid, client_type, conn.account, name, len(self.signed_in()))

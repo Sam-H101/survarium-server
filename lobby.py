@@ -21,6 +21,10 @@ C->S  (lobby_client_message_types_enum)
   39 discard_playing_order u32 match_order_id
   40 ping_server           u32 time                                      -> 55 u32 time
 S->C  (lobby_server_message_types_enum)
+  48 connection_successful    (answer to 38 for a session the login server issued)
+  49 invalid_session_id       (answer to 38 for any other session; then the connection is
+                              closed, so the client retries and after 4 failures returns to
+                              the login screen, network_client_processing.cpp:557-565)
   51 connect_to_match_server  str host(<64), u16 port, u32 match_id, u8 team
 
 Match-making feed (docs/match_protocol.md 12.8): while a player is queued, the chat server
@@ -160,6 +164,17 @@ class Store:
         elif "stats" not in acc:                 # an account saved before progression existed
             self.migrate(acc)
         return acc
+
+    # --- login credentials (survarium_poc_server.LoginServer) ---------------------------
+    def password_record(self, name: str) -> dict | None:
+        """The stored password hash of an account; None for a new account or one saved
+        before passwords existed (its next sign-in sets it)."""
+        acc = self.doc["accounts"].get(name)
+        return acc.get("password") if acc else None
+
+    def set_password(self, name: str, record: dict) -> None:
+        self.account(name)["password"] = record
+        self.save()
 
     def migrate(self, acc: dict) -> None:
         acc["stats"] = {"matches": 0, "wins": 0, "kills": 0, "deaths": 0}
@@ -334,9 +349,13 @@ class Denied(Exception):
     pass
 
 
+class SessionRejected(Exception):
+    """op 38 named a session the login server never issued (or dropped)."""
+
+
 class LobbyServer:
     def __init__(self, gd: ld.GameData, store: Store, matchmaker: Matchmaker,
-                 sessions: dict[int, str] | None = None, fallback_account: str = "Stalker",
+                 sessions: dict[int, str] | None = None, fallback_account: str | None = None,
                  service_prices: tuple[int, int, int] | None = None, match_timeout: float = 60.0,
                  serve_skills_tree: bool = True, rules: progression.Progression | None = None):
         self.gd = gd
@@ -353,6 +372,9 @@ class LobbyServer:
         self.store = store
         self.mm = matchmaker
         self.sessions = sessions if sessions is not None else {}
+        # None: a session the login server did not issue gets op 49 (the real client always
+        # signs in to the login server first); a name: such sessions use that account
+        # (--accept-unknown-sessions, for tools that skip the login)
         self.fallback_account = fallback_account
         self.service_prices = service_prices or gd.service_prices
         self.match_timeout = match_timeout
@@ -693,6 +715,9 @@ class LobbyServer:
                         conn.dispatch(payload)
                     except (struct.error, IndexError) as e:
                         log.warning("%s: malformed op %d (%s): %r", conn.peer, payload[0], payload.hex(), e)
+                    except SessionRejected:
+                        await writer.drain()
+                        break
                     await writer.drain()      # a client that does not read stalls only itself
         except (asyncio.IncompleteReadError, ConnectionError, asyncio.TimeoutError, OSError) as e:
             log.debug("%s: lobby disconnected (%r)", conn.peer, e)
@@ -702,6 +727,14 @@ class LobbyServer:
             self.leave_queue(conn.account_name)
             writer.close()
             self._forget_idle_status(conn.account_name)
+
+    def drop_session(self, session_id: int) -> None:
+        """The login server signed this session out: close its lobby connections."""
+        for conn in list(self.live_conns):
+            if conn.session_id == session_id and not conn.closed:
+                log.info("%s: session %d signed out; closing the lobby connection", conn.peer, session_id)
+                conn.closed = True
+                conn.writer.close()
 
     def _forget_idle_status(self, account: str | None) -> None:
         """Bounded: no PlayStatus is kept for an account that is offline in the menu."""
@@ -773,8 +806,15 @@ class LobbyConnection:
     # --- 38 -----------------------------------------------------------------------------
     def on_sign_in(self, p: bytes) -> None:
         sid = struct.unpack_from("<I", p, 1)[0]
+        account = self.srv.sessions.get(sid) or self.srv.fallback_account
+        if account is None:
+            # lobby_client::sign_in_on_packet_received only logs anything but 48 and keeps
+            # waiting; the close makes it retry (on_error) and finally go back to the login
+            log.warning("%s: lobby sign in with unknown session_id=%d; invalid_session_id", self.peer, sid)
+            self.send(bytes([INVALID_SESSION_ID]))
+            raise SessionRejected(sid)
         self.session_id = sid
-        self.account_name = self.srv.sessions.get(sid) or self.srv.fallback_account
+        self.account_name = account
         acc = self.acc
         play = self.play
         if play.state == IN_MATCH:
