@@ -228,6 +228,63 @@ class TestInventory(LobbyTestBase):
         self.assertIn((53, 19), self.gd.compatibilities())
         self.assertNotIn((19, 53), self.gd.compatibilities())
 
+    async def equip(self, c, pid, dict_id, slot, amount, permitted=True):
+        item = next(it for it in c.m.inventory if it["dict_id"] == dict_id)
+        n, d = len(c.m.permitted), len(c.m.denied)
+        await c.send(pk_move([(pid, item["id"], dict_id, ld.STORAGE_SLOT, slot, amount)]))
+        await c.pump(lambda m: len(m.permitted) > n if permitted else len(m.denied) > d)
+        await c.pump()
+
+    def weight(self, pid) -> float:
+        conn = next(iter(self.lobby.live_conns))
+        return conn.profile_weight(next(p for p in self.lobby.store.account("tester")["profiles"]
+                                        if p["profile_id"] == pid))
+
+    @unittest.skipUnless(DICTS, "game data missing")
+    async def test_weight_limit(self):
+        """player_parameters_modifyer_cook weighs count x weight per equipped slot against
+        default.player's max_carried_weight (30 kg); the client only paints it red, the server
+        denies it with --weight-limit."""
+        self.assertEqual(self.gd.max_carried_weight, 30.0)
+        self.lobby.weight_limit = True
+        c = await self.client()
+        pid = c.m.profiles[0]["profile_id"]
+        self.assertAlmostEqual(self.weight(pid), 14.19, places=2)          # the starter loadout
+        await self.equip(c, pid, 65, 13, 3)                                  # 3 painkillers, 5 kg each
+        self.assertAlmostEqual(self.weight(pid), 29.19, places=2)
+        await self.equip(c, pid, 54, 14, 1, permitted=False)                 # a 5 kg artefact: too heavy
+        self.assertEqual(c.m.denied[-1][0], 35)
+        self.assertIn("too heavy", c.m.denied[-1][1])
+        self.assertNotIn(14, c.m.profiles[0]["slots"])
+        self.assertTrue(any(it["dict_id"] == 54 for it in c.m.inventory))    # rolled back
+        self.lobby.weight_limit = False                                      # default: allowed
+        await self.equip(c, pid, 54, 14, 1)
+        self.assertIn(14, c.m.profiles[0]["slots"])
+        self.lobby.weight_limit = True                                       # lightening is fine
+        pk = c.m.profiles[0]["slots"][13]
+        n = len(c.m.permitted)
+        await c.send(pk_move([(pid, pk["id"], 65, 13, ld.STORAGE_SLOT, 3)]))
+        await c.pump(lambda m: len(m.permitted) > n)
+        self.assertAlmostEqual(self.weight(pid), 19.19, places=2)
+
+    @unittest.skipUnless(DICTS, "game data missing")
+    async def test_attached_ammo_fits_the_weight(self):
+        """PaperDollSlot.tryFillAmmo: whole clips in half the weight still free."""
+        self.lobby.store.account("tester")["reputation"]["2"] = 800
+        c = await self.client()
+        pid = c.m.profiles[0]["profile_id"]
+        for dict_id, count in ((19, 1), (71, 200)):
+            await c.send(pk_buy(dict_id, count, 2))
+            await c.pump(lambda m: any(it["dict_id"] == dict_id for it in m.inventory))
+            await c.pump()
+        await self.equip(c, pid, 65, 13, 3)                                  # 29.19 kg
+        await self.equip(c, pid, 19, ld.WEAPON2, 1)                          # Vityaz for the AK-74u
+        slots = c.m.profiles[0]["slots"]
+        # 27.89 kg: 2.11 free -> 2 clips of 9x19 (0.4 kg); then 1.31 free -> 1 clip of HP
+        got = {s: (slots[s]["dict_id"], slots[s]["cond"]) for s in (ld.AMMO1_W2, ld.AMMO2_W2)}
+        self.assertEqual(got, {ld.AMMO1_W2: (53, 100), ld.AMMO2_W2: (71, 50)})
+        self.assertLessEqual(self.weight(pid), 30.0)
+
     async def test_ammo_moved_with_the_weapon_is_not_doubled(self):
         self.lobby.store.account("tester")["reputation"]["2"] = 800
         c = await self.client()

@@ -1074,7 +1074,14 @@ The lobby ticket (`lobby.py issue_ticket`) carries every slot of the profile the
 * The scope item (dict 69) is not sold (`lobby_data.GameData.equippable`: no slot accepts its category, so it is left out of `q_price_items` and a buy of it is denied) and every relocation of it into a profile slot is denied (`slot_accepts`). The one in the starter stash stays in storage. A scope in a ticket would be dropped by `sanitize_loadout` (13.1) instead of reaching 0x92.
 * In a match, the rem_700 carries its scope through its own config; the server needs and sends nothing for it.
 
-`tests/test_weapons.py` covers 13.1-13.3.
+### 13.4 Carried weight
+
+* **What the client shows.** `lobby_menu::player_parameters_ready` calls `root.player_profile.updateWeight(total, max)`. `total` is `player_parameters_modifyer_cook`'s `total_items_weight`: over the profile's 19 slots, `count x weight`, where count is `condition_or_stack` for stackable items and 1 otherwise, and weight is the item config's `parameters.weight`, or `parameters.clip_weight / clip_size` (one round) for ammunition (`items_dictionary_cook.cpp:103-111`; items without `parameters` weigh nothing). `max` is `default.player` `player.stamina_params.max_carried_weight` = **30** (`lobby_menu_ui.cpp:487`); the `additional_max_weight` booster is added only to the in-game stamina (`player_parameters_cook.cpp:93`), not to this figure. [V]
+* **What the client enforces.** Nothing: `PlayerProfile.updateWeight` paints the figure red when `total > max`, and only the ammunition autofill and the ammo slider are capped by the free weight (`PaperDollSlot.tryFillAmmo`: whole clips in half of `max - total`; `MessageAsk`). An over-weight profile can still be played. [V inventory.swf]
+* **Data quirk.** The shipped configs weigh a painkiller 5 kg and the lifebone artefact 5 kg, so a few quick-slot items already reach the limit (the starter profiles weigh 14.2, 10.1 and 19.3 kg).
+* **PoC.** `lobby_data` computes the same per-unit weights and reads the maximum from `default.player`. The server-side ammunition autofill (`attach_ammo`) applies the client's own cap. `--weight-limit` (off by default, as the client allows it) denies an inventory action that takes a profile over the maximum, with `53 35 "too heavy: x of 30 kg"`; a move that lightens an already heavy profile is always allowed. Without game data the weights are unknown and nothing is limited.
+
+`tests/test_weapons.py` covers 13.1-13.3; `tests/test_lobby.py` covers 13.4.
 
 ---
 

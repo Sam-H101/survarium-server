@@ -52,7 +52,9 @@ quick slots, artefacts) is what the match sends; keys 1/2 switch weapon, and the
 other clients in step (`docs/match_protocol.md` section 13). One unusable item is dropped from a
 ticket instead of replacing the whole loadout with the AK-74u default. The retail client has no
 weapon upgrade/attachment protocol: the only addon is the rem_700's scope, baked into its weapon
-config, so the lobby neither sells nor equips scopes (section 13.3).
+config, so the lobby neither sells nor equips scopes (section 13.3). Weight: a weapon the
+server fills with ammunition gets only what fits the 30 kg the inventory shows, like the
+client's own autofill; heavier loadouts are allowed unless `--weight-limit` (section 13.4).
 
 Progression (`docs/match_protocol.md` section 14): a finished match pays every player experience,
 money and faction reputation (`data/progression.json`, `--reward-scale`); levels grant skill points
@@ -139,6 +141,7 @@ Lobby and match options (see `--help`):
 | `--start-money`, `--start-premium`, `--start-skill-points` | `10000`, `100`, `10` | Starting values for a new account. |
 | `--progression`, `--reward-scale` | `data/progression.json`, `1.0` | Level table and match rewards; `--reward-scale 10` pays ten times as much (test the unlocks quickly). |
 | `--no-skills-tree` | | Leave status type 9 unanswered. |
+| `--weight-limit` | | Deny equipment moves that take a character over the inventory's 30 kg maximum (the client only shows the total in red; spec 13.4). |
 
 ## Two players
 

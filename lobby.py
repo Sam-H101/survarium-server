@@ -357,7 +357,8 @@ class LobbyServer:
     def __init__(self, gd: ld.GameData, store: Store, matchmaker: Matchmaker,
                  sessions: dict[int, str] | None = None, fallback_account: str | None = None,
                  service_prices: tuple[int, int, int] | None = None, match_timeout: float = 60.0,
-                 serve_skills_tree: bool = True, rules: progression.Progression | None = None):
+                 serve_skills_tree: bool = True, rules: progression.Progression | None = None,
+                 weight_limit: bool = False):
         self.gd = gd
         self.prog = rules or progression.Progression()
         # notify(account, stats_line, info_lines): the chat server shows the match result
@@ -379,6 +380,9 @@ class LobbyServer:
         self.service_prices = service_prices or gd.service_prices
         self.match_timeout = match_timeout
         self.serve_skills_tree = serve_skills_tree
+        # deny equipment moves past the inventory's maximum weight (--weight-limit); the
+        # retail client only shows the total in red, and its data weighs a painkiller 5 kg
+        self.weight_limit = weight_limit
         self.status: dict[str, PlayStatus] = {}
         self.live_conns: set[LobbyConnection] = set()
 
@@ -1056,6 +1060,7 @@ class LobbyConnection:
             return self.deny(INVENTORY_ACTION, f"unknown inventory action {sub}")
         moves = [struct.unpack_from("<IIIIIH", p, 3 + 22 * i) for i in range(n)]
         snapshot = json.dumps(self.acc)
+        before = {pr["profile_id"]: self.profile_weight(pr) for pr in self.acc["profiles"]}
         try:
             if self.play.state != SURF_LOBBY_MENU:
                 raise Denied("cannot change equipment while queued")
@@ -1066,6 +1071,7 @@ class LobbyConnection:
             for profile_id, _, _, _, dst, _ in moves:
                 if dst in (ld.WEAPON1, ld.WEAPON2):
                     self.attach_ammo(self.find_profile(profile_id), dst)
+            self.check_weight({m[0] for m in moves}, before)
         except Denied as e:
             self.store.doc["accounts"][self.account_name] = json.loads(snapshot)
             self.deny(INVENTORY_ACTION, str(e))
@@ -1128,6 +1134,30 @@ class LobbyConnection:
             else:
                 self.to_storage(occupant)
 
+    def profile_weight(self, pr: dict) -> float:
+        """player_parameters_modifyer_cook: the sum over the equipped slots of count x weight
+        (count = the stack for stackable items), the figure the inventory shows."""
+        total = 0.0
+        for it in pr["slots"].values():
+            item = self.gd.items.get(it["dict_id"])
+            if item is not None:
+                total += (it["cond"] if item.is_stack else 1) * item.carry_weight
+        return total
+
+    def check_weight(self, profile_ids, before: dict[int, float]) -> None:
+        """A move may not take a profile over the inventory's maximum (default.player
+        max_carried_weight); one that lightens an already heavy profile is allowed."""
+        limit = self.gd.max_carried_weight
+        if limit <= 0 or not self.srv.weight_limit:
+            return
+        for profile_id in profile_ids:
+            pr = self.find_profile(profile_id)
+            if pr is None:
+                continue
+            weight = self.profile_weight(pr)
+            if weight > limit + 1e-4 and weight > before.get(profile_id, 0.0) + 1e-4:
+                raise Denied(f"too heavy: {weight:.1f} of {limit:.0f} kg")
+
     def eject_incompatible_ammo(self, pr: dict | None) -> None:
         """A new weapon may not fit the ammo its slots still hold (the client checks that only
         when ammo is moved): the unfitting ammo goes back to storage so no ticket carries it."""
@@ -1157,7 +1187,14 @@ class LobbyConnection:
                    if any(it["dict_id"] == d for it in storage)]
         for slot, dict_id in zip(pair, fitting):
             stack = next(it for it in storage if it["dict_id"] == dict_id)
-            take = min(stack["cond"], AUTO_AMMO_CLIPS * max(1, self.gd.items[dict_id].clip_size))
+            item = self.gd.items[dict_id]
+            take = min(stack["cond"], AUTO_AMMO_CLIPS * max(1, item.clip_size))
+            if self.gd.max_carried_weight > 0 and item.clip_weight > 0:
+                # PaperDollSlot.tryFillAmmo: whole clips in half the weight still free
+                free = self.gd.max_carried_weight - self.profile_weight(pr)
+                take = min(take, max(0, int(free / 2 / item.clip_weight)) * max(1, item.clip_size))
+            if take <= 0:
+                continue
             if take < stack["cond"]:
                 stack["cond"] -= take
                 slots[str(slot)] = self.store.new_item(dict_id, take)

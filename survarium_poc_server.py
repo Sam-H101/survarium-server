@@ -482,7 +482,7 @@ def build_lobby(args, sessions: dict[int, str]) -> lobby.LobbyServer:
     return lobby.LobbyServer(gd, store, matchmaker, sessions,
                              fallback_account=args.nickname if args.accept_unknown_sessions else None,
                              match_timeout=args.match_timeout, serve_skills_tree=not args.no_skills_tree,
-                             rules=rules)
+                             rules=rules, weight_limit=args.weight_limit)
 
 
 def parse_args(argv=None):
@@ -529,6 +529,9 @@ def parse_args(argv=None):
     lob.add_argument("--start-premium", type=int, default=100)
     lob.add_argument("--start-skill-points", type=int, default=10)
     lob.add_argument("--no-skills-tree", action="store_true", help="leave query type 9 unanswered")
+    lob.add_argument("--weight-limit", action="store_true",
+                     help="deny equipment moves that take a profile over the inventory's maximum weight "
+                          "(default.player max_carried_weight, 30 kg); the client itself only shows it in red")
     lob.add_argument("--progression", type=Path, default=HERE / "data" / "progression.json",
                      help="level table and match rewards (experience, money, reputation); "
                           "built-in defaults if missing")

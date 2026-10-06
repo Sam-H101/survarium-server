@@ -198,6 +198,10 @@ class Item:
     cfg_name: str
     weight: float = 1.0
     clip_size: int = 30
+    # what the client weighs one unit at (items_dictionary_cook::on_subresources_loaded:
+    # parameters.weight, or clip_weight / clip_size per round of ammo); 0 = unknown
+    carry_weight: float = 0.0
+    clip_weight: float = 0.0
 
 
 @dataclass
@@ -209,6 +213,9 @@ class GameData:
     source: str
     data_dir: Path | None = None
     sources: dict[str, str] = field(default_factory=dict)
+    # default.player stamina_params.max_carried_weight, the maximum the inventory shows
+    # (lobby_menu::player_parameters_ready); 0 = unknown, no limit
+    max_carried_weight: float = 0.0
 
     def __post_init__(self):
         self.slot_rules: dict[int, tuple[int, ...]] = dict(SLOT_RULES)
@@ -444,6 +451,11 @@ def _from_dictionary(extracted: Path, d: dict, source: str, data_dir: Path | Non
                 params = bc.load(cfg.read_bytes()).get("parameters", {})
                 item.weight = float(params.get("weight", params.get("clip_weight", 1.0)))
                 item.clip_size = int(params.get("clip_size", item.clip_size))
+                if item.category in AMMO_CATEGORIES:
+                    item.clip_weight = float(params.get("clip_weight", 0.0))
+                    item.carry_weight = item.clip_weight / max(1, item.clip_size)
+                else:
+                    item.carry_weight = float(params.get("weight", 0.0))
             except Exception:  # noqa: BLE001 - weight only feeds prices
                 pass
         items[item.dict_id] = item
@@ -455,6 +467,11 @@ def _from_dictionary(extracted: Path, d: dict, source: str, data_dir: Path | Non
                 perks_by_skill[skill].append(perk["id"])
     boosters = {b["id"] for b in d["boosters_dict"].values()}
     gd = GameData(items, factions, perks_by_skill, boosters, source, data_dir)
+    player = extracted / "gameplay" / "players" / "default.player"
+    try:
+        gd.max_carried_weight = float(bc.load(player.read_bytes())["player"]["stamina_params"]["max_carried_weight"])
+    except Exception as e:  # noqa: BLE001 - no limit without it
+        log.warning("cannot read max_carried_weight from %s (%r); no weight limit", player, e)
     log.info("game data: %d items, %d factions, %d perks from %s; tables: %s",
              len(items), len(factions), sum(map(len, perks_by_skill.values())), source, gd.sources)
     return gd
