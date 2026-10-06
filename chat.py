@@ -74,6 +74,7 @@ BODY_MAX = 254                 # char body[256], r_string buffer 255, asserts le
 FIND_MAX = 50
 NO_MATCH = 0xFFFFFFFF
 LOCAL_ID_BASE = 0x40000000     # ids for accounts the lobby does not know (no lobby attached)
+ONLINE_COUNT_DELAY_S = 1.0     # #pc broadcasts are coalesced to one per this interval
 
 
 def frame(payload: bytes) -> bytes:
@@ -128,6 +129,7 @@ class ChatConnection:
     account: str | None = None          # login account name (key of the lobby's state)
     subscriptions: list[int] = field(default_factory=lambda: [0] * MAX_CHANNEL)
     closed: bool = False
+    online_shown: int | None = None     # the last #pc value this client got
 
     def send(self, payload: bytes) -> None:
         if self.closed or self.writer.is_closing():
@@ -197,6 +199,7 @@ class ChatServer:
         self.friends = FriendStore(state_path)
         self.conns: list[ChatConnection] = []
         self._local_ids: dict[str, int] = {}
+        self._count_timer: asyncio.TimerHandle | None = None
 
     # --- identity -----------------------------------------------------------------------
     def account_id(self, account: str) -> int:
@@ -272,6 +275,7 @@ class ChatServer:
             writer.close()
             if conn.account:
                 log.debug("%s: %r left chat (%d online)", conn.peer, conn.account, len(self.signed_in()))
+                self.online_changed()
 
     def signed_in(self) -> list[ChatConnection]:
         return [c for c in self.conns if c.account and not c.closed]
@@ -308,6 +312,8 @@ class ChatServer:
         log.info("%s: chat sign in session_id=%d type=%d account=%r as %r (%d online)", conn.peer,
                  sid, client_type, conn.account, name, len(self.signed_in()))
         conn.send(bytes([SIGNED_IN]) + pstr(self.wire_name(name), NAME_MAX))
+        self.send_online_count(conn, self.online_count())
+        self.online_changed()
 
     def on_subscriptions(self, conn: ChatConnection, rd: Reader) -> None:
         conn.subscriptions = list(rd.r(f"{MAX_CHANNEL}I"))
@@ -405,15 +411,52 @@ class ChatServer:
         conn.send(bytes([TEXT_MESSAGE, MESSAGE_SERVER_CLIENT_TYPE]) + struct.pack("<I", 0)
                   + pstr(b"System", NAME_MAX) + bytes([CH_SYSTEM]) + pstr(body, BODY_MAX))
 
+    def server_line(self, channel: int, text: str) -> bytes:
+        return (bytes([TEXT_MESSAGE, MESSAGE_SERVER_CLIENT_TYPE]) + struct.pack("<I", 0)
+                + pstr(b"System", NAME_MAX) + bytes([channel])
+                + pstr(text.encode(self.codepage, errors="replace"), BODY_MAX))
+
+    def send_feed(self, account: str, channel: int, text: str) -> None:
+        """A status line for the lobby menu (lobby.LobbyServer.feed): channel 7 feeds the
+        match-making window, 8 the stats parser; neither is shown as chat."""
+        payload = self.server_line(channel, text)
+        for c in self.online(account):
+            c.send(payload)
+
+    # --- online counter (#pc) -----------------------------------------------------------
+    def online_count(self) -> int:
+        return len({c.account for c in self.signed_in()})
+
+    def send_online_count(self, conn: ChatConnection, count: int) -> None:
+        """`#pc:[n]` on the stats channel: lobby_menu::on_stats_message_arrived passes n to
+        root.set_games_online (the status panel's online figure; wchar_t[8], so <= 7 digits)."""
+        conn.online_shown = count
+        conn.send(self.server_line(CH_SQUAD, f"#pc:[{min(count, 9999999)}]"))
+
+    def online_changed(self) -> None:
+        """Coalesced: one broadcast at most every ONLINE_COUNT_DELAY_S."""
+        if self._count_timer is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return self.broadcast_online_count()
+        self._count_timer = loop.call_later(ONLINE_COUNT_DELAY_S, self.broadcast_online_count)
+
+    def broadcast_online_count(self) -> None:
+        self._count_timer = None
+        count = self.online_count()
+        for c in self.signed_in():
+            if c.online_shown != count:
+                self.send_online_count(c, count)
+
     def notify_match_result(self, account: str, stats: str, lines: list[str]) -> None:
         """A finished match for one account (lobby.LobbyServer.award_match). `stats` goes out on
         the squad channel, which the client feeds to lobby_menu::on_stats_message_arrived: it
         reads the experience from `#e:[n]`, remembers it as the match's experience delta and
         re-queries money and skills; the other lines are plain system messages."""
         for c in self.online(account):
-            c.send(bytes([TEXT_MESSAGE, MESSAGE_SERVER_CLIENT_TYPE]) + struct.pack("<I", 0)
-                   + pstr(b"System", NAME_MAX) + bytes([CH_SQUAD])
-                   + pstr(stats.encode(self.codepage, errors="replace"), BODY_MAX))
+            c.send(self.server_line(CH_SQUAD, stats))
             for line in lines:
                 self.system(c, line)
 

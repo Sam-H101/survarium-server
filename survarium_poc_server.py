@@ -516,6 +516,7 @@ async def main(argv=None) -> None:
         chat_server = chat.ChatServer(sessions, lobby_server, fallback_account=args.nickname,
                                       state_path=state_dir / "chat_state.json" if state_dir else None)
         lobby_server.notify = chat_server.notify_match_result
+        lobby_server.feed = chat_server.send_feed
     browser = BrowserServer(f"{args.public_host}:{args.lobby_port}",
                             "x:0" if args.no_chat else "%s:%d" % args.chat_address)
 

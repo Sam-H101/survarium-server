@@ -24,7 +24,7 @@ import lobby  # noqa: E402
 import lobby_data as ld  # noqa: E402
 from chat_mock_client import (GENERAL, MATCH, PRIVATE, SYSTEM, TEAM1, MockChatClient,  # noqa: E402
                               pk_friendship, pk_sign_in, pk_text)
-from mock_client import ClientModel, MockLobbyClient, pk_ready, tcp_frame  # noqa: E402
+from mock_client import ClientModel, MockLobbyClient, pk_discard, pk_ready, tcp_frame  # noqa: E402
 from test_lobby import DICTS  # noqa: E402
 
 SESSIONS = {1: "alice", 2: "bob", 3: "carol", 4: "dave", 5: "erin"}
@@ -45,6 +45,7 @@ class ChatTestBase(unittest.IsolatedAsyncioTestCase):
         self.lobby_srv = await asyncio.start_server(self.lobby.handle, "127.0.0.1", 0)
         self.lobby_port = self.lobby_srv.sockets[0].getsockname()[1]
         self.chat = chat.ChatServer(self.sessions, self.lobby, state_path=self.state / "chat_state.json")
+        self.lobby.feed = self.chat.send_feed
         self.server = await asyncio.start_server(self.chat.handle, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
         self.clients: list[MockChatClient] = []
@@ -88,7 +89,11 @@ class TestSignIn(ChatTestBase):
         self.assertEqual(c.sent[1], bytes([0xC5]) + struct.pack("<9I", 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0))
         self.assertEqual(c.sent[2:], [bytes([0xC4, 5]), bytes([0xC4, 6])])
         self.assertEqual(c.frames[0], bytes([0xCB, 5]) + b"alice")
-        self.assertEqual(c.frames[1:], [bytes([0xCC, 5, 0, 0]), bytes([0xCC, 6, 0, 0])])
+        # the online counter (stats channel 8, from the message server), then the two lists
+        self.assertEqual(c.frames[1], bytes([0xC9, 4, 0, 0, 0, 0, 6]) + b"System" + bytes([8, 7]) + b"#pc:[1]")
+        self.assertEqual(c.frames[2:], [bytes([0xCC, 5, 0, 0]), bytes([0xCC, 6, 0, 0])])
+        self.assertEqual(c.m.games_online, 1)
+        self.assertEqual(c.m.received, [])                  # neither is shown as chat
         self.assertEqual(c.m.friendship_events, [5, 6])
         self.assertClean(c)
 
@@ -235,6 +240,117 @@ class TestMatchChat(ChatTestBase):
                 await c.close()
             s.close()
             await s.wait_closed()
+
+
+class TestLobbyFeeds(ChatTestBase):
+    async def lobby_client(self, sid: int) -> MockLobbyClient:
+        lc = MockLobbyClient(ClientModel(DICTS))
+        await lc.connect("127.0.0.1", self.lobby_port, sid)
+        await lc.pump(lambda m: len(m.profiles) == 3 and all("slots" in p for p in m.profiles), timeout=10)
+        return lc
+
+    async def queue(self, lc: MockLobbyClient, c: MockChatClient) -> str:
+        """Play: the pushed state shows the window (show_match_making restarts the movie);
+        the feed starts once the client polls its state a second later."""
+        await lc.send(pk_ready(lc.m.profiles[1]["profile_id"]))
+        await lc.pump(lambda m: m.status in (2, 3))
+        if lc.m.status == 2:
+            c.show_match_making()
+        return lc.m.profiles[1]["name"]
+
+    async def test_online_counter(self):
+        a = await self.client(1)
+        self.assertEqual(a.m.games_online, 1)
+        b = await self.client(2)
+        self.assertEqual(b.m.games_online, 2)
+        await a.pump(lambda m: m.games_online == 2)        # coalesced broadcast (<= 1 s)
+        b2 = await self.client(2)                            # a second connection: same account
+        self.assertEqual(b2.m.games_online, 2)
+        await b.close()
+        await b2.close()
+        self.clients.remove(b)
+        self.clients.remove(b2)
+        await a.pump(lambda m: m.games_online == 1)
+        self.assertEqual(a.m.received, [])
+        self.assertClean(a)
+
+    async def test_match_making_window(self):
+        mm = self.lobby.mm
+        mm.match_size, mm.delay = 3, 60.0                    # nobody is matched by the timer
+        lob = {sid: await self.lobby_client(sid) for sid in (1, 2, 3)}
+        cl = {sid: await self.client(sid) for sid in (1, 2, 3)}
+        try:
+            na = await self.queue(lob[1], cl[1])
+            await cl[1].pump(lambda m: m.mm_place == "1/3")
+            self.assertEqual(cl[1].m.mm_teams, ([na], []))
+            self.assertEqual(cl[1].m.match_making[0], f"#+p:[ {na} ]#t:[0]")
+
+            nb = await self.queue(lob[2], cl[2])
+            await cl[1].pump(lambda m: m.mm_place == "2/3")
+            self.assertEqual(cl[1].m.mm_teams, ([na], [nb]))
+            await cl[2].pump(lambda m: m.mm_place == "2/3")   # after bob's first poll
+            self.assertEqual(cl[2].m.mm_teams, ([na], [nb]))
+
+            await lob[2].send(pk_discard(lob[2].m.order_id))   # bob leaves the queue
+            await lob[2].pump(lambda m: m.status == 0)
+            await cl[1].pump(lambda m: m.mm_place == "1/3")
+            self.assertEqual(cl[1].m.mm_teams, ([na], []))
+            self.assertIn(f"#-p:[ {nb} ]", cl[1].m.match_making)
+
+            await self.queue(lob[2], cl[2])
+            await cl[2].pump(lambda m: m.mm_place == "2/3")
+            nc = await self.queue(lob[3], cl[3])               # the third player: match formed
+            for sid in (1, 2, 3):
+                await lob[sid].pump(lambda m: m.connect_to_match is not None)
+            teams = {sid: lob[sid].m.connect_to_match[3] for sid in (1, 2, 3)}
+            self.assertEqual(teams, {1: 0, 2: 1, 3: 0})       # alternate within the match
+            # the waiting windows end with the final roster (shown while the level loads)
+            for sid in (1, 2):
+                await cl[sid].pump(lambda m: m.mm_place == "3/3")
+                self.assertEqual(cl[sid].m.mm_teams, ([na, nc], [nb]))
+            self.assertEqual(cl[3].m.match_making, [])          # matched before its first poll
+            await self.settle(*cl.values())
+            for c in cl.values():
+                self.assertEqual(c.m.received, [])
+            self.assertClean(*cl.values())
+            self.assertEqual(self.lobby.feed_views, {})
+        finally:
+            for lc in lob.values():
+                await lc.close()
+
+    async def test_waiting_player_loses_a_disconnected_one(self):
+        mm = self.lobby.mm
+        mm.match_size, mm.delay = 4, 60.0
+        lob = {sid: await self.lobby_client(sid) for sid in (1, 2)}
+        a = await self.client(1)
+        try:
+            na = await self.queue(lob[1], a)
+            nb = await self.queue(lob[2], MockChatClient())
+            await a.pump(lambda m: m.mm_teams == ([na], [nb]))
+            await lob[2].close()                                # bob's lobby connection dies
+            await a.pump(lambda m: m.mm_teams == ([na], []) and m.mm_place == "1/4")
+            self.assertClean(a)
+        finally:
+            for lc in lob.values():
+                await lc.close()
+
+    def test_feed_lines_fit_the_client_buffers(self):
+        sent = []
+        self.lobby.feed = lambda account, channel, text: sent.append((channel, text))
+        view = lobby.FeedView(1)
+        long_name = "[x]#" + "y" * 40
+        self.lobby.send_feed_diff("alice", view, {lobby.feed_name(long_name): 1}, "12/20")
+        c = MockChatClient()
+        for channel, text in sent:
+            self.assertEqual(channel, 7)
+            c.on_match_message_arrived(text)
+        self.assertEqual(c.m.faults, [])
+        self.assertEqual(c.m.mm_teams, ([], ["_x__" + "y" * 27]))
+        self.assertEqual(c.m.mm_place, "12/20")
+        self.lobby.send_feed_diff("alice", view, {}, "0/20")
+        for _, text in sent[2:]:
+            c.on_match_message_arrived(text)
+        self.assertEqual(c.m.mm_teams, ([], []))
 
 
 class TestFriends(ChatTestBase):

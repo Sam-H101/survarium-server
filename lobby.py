@@ -22,6 +22,12 @@ C->S  (lobby_client_message_types_enum)
   40 ping_server           u32 time                                      -> 55 u32 time
 S->C  (lobby_server_message_types_enum)
   51 connect_to_match_server  str host(<64), u16 port, u32 match_id, u8 team
+
+Match-making feed (docs/match_protocol.md 12.8): while a player is queued, the chat server
+carries channel-7 lines to its match-making window (lobby_menu::on_match_message_arrived):
+  #+p:[ name ]#t:[team]   add a player to team column 0/1
+  #-p:[ name ]            remove a player
+  #q:[n/size]             the "waiting for players" field
 """
 
 from __future__ import annotations
@@ -61,6 +67,7 @@ DISCARD_PLAYING_ORDER = 39
 PING_SERVER = 40
 # lobby_server_message_types_enum
 CONNECTION_SUCCESSFUL = 48
+INVALID_SESSION_ID = 49
 CONNECT_TO_MATCH_SERVER = 51
 OPERATION_PERMITTED = 52
 OPERATION_DENIED = 53
@@ -80,6 +87,10 @@ FACTION_NAMES = {1: "Scavengers", 2: "Black Market", 3: "Renaissance", 4: "Borde
                  5: "Scientists", 6: "Mercenaries"}
 SHOP_TRADERS = (1, 2, 3, 4)  # lobby_menu::on_shop_ui_ready asks for these; the shop lists only 1 and 2
 AWARDED_MAX = 5000          # (session, match) pairs remembered so a result is paid once
+
+# chat channels of the lobby menu's status feeds (messaging::message_channel_enum):
+# process_incoming_text_message hands 7 (player_team2_channel) to on_match_message_arrived
+FEED_MATCH_MAKING = 7
 
 MAX_PROFILES = 3            # lobby_client::m_profiles[3]
 NAME_MAX = 31               # char[32] buffers (profile_name, account_nickname_)
@@ -222,12 +233,32 @@ class QueueEntry:
     since: float
 
 
+@dataclass
+class FeedView:
+    """What one queued client's match-making window shows (sent over chat channel 7).
+    The window is restarted (emptied) each time the client shows it, i.e. once per order."""
+    order_id: int
+    shown: dict = None            # name -> team column
+    place: str = ""
+
+    def __post_init__(self):
+        self.shown = {} if self.shown is None else self.shown
+
+
+def feed_name(name: str) -> str:
+    """A name as the match-making window parses it: wcsncpy_s into wchar_t[32] up to the first
+    " ]", so no brackets or '#' (a stray "#t:[" would be found first), at most 31 characters."""
+    out = "".join("_" if ch in "[]#" else ch for ch in name).strip() or "?"
+    return out[:NAME_MAX]
+
+
 class Matchmaker:
     """Queue-based matchmaking with a FIXED roster per match.
 
     A match is formed when ``match_size`` players are queued, or, once the oldest queued
     player has waited ``delay`` seconds (the fill timeout), with everyone queued if that is
-    at least ``min_players``. Teams alternate in queue order. All tickets of a match are
+    at least ``min_players``. Teams alternate in queue order within each match (the
+    match-making window shows the same split while players wait). All tickets of a match are
     written BEFORE any op 51 goes out, so the match server can build the full roster (same
     0x81 players_count and 0x92 profiles for every client) from the first connect.
 
@@ -250,7 +281,6 @@ class Matchmaker:
         self.min_players = max(1, min(min_players, self.match_size))
         self.tickets_path = tickets
         self.orders = itertools.count(1)
-        self.teams = itertools.cycle((0, 1))   # team_1, team_2
         self.tickets = _TICKETS
         self.queue: list[QueueEntry] = []
         # placer(match_id, {str(session_id): ticket}, done): hands a new match to a match
@@ -314,6 +344,10 @@ class LobbyServer:
         # notify(account, stats_line, info_lines): the chat server shows the match result
         # (set by survarium_poc_server; None without chat)
         self.notify: Callable[[str, str, list[str]], None] | None = None
+        # feed(account, channel, text): a status line through the chat server
+        # (ChatServer.send_feed; None without chat)
+        self.feed: Callable[[str, int, str], None] | None = None
+        self.feed_views: dict[str, FeedView] = {}
         self.dirty: set[str] = set()         # accounts whose menu data changed outside a query
         self._awarded: collections.OrderedDict = collections.OrderedDict()
         self.store = store
@@ -335,16 +369,26 @@ class LobbyServer:
         except RuntimeError:
             pass
 
-    def form_matches(self) -> None:
+    def prune_queue(self) -> None:
         mm = self.mm
         mm.queue = [e for e in mm.queue if not e.conn.closed and e.account in self.status
                     and self.status[e.account].state == IN_MATCH_MAKING
                     and self.status[e.account].order_id == e.order_id]
+
+    def form_matches(self) -> None:
+        mm = self.mm
+        self.prune_queue()
         while len(mm.queue) >= mm.match_size:
             self._form(mm.queue[:mm.match_size])
         if mm.queue and len(mm.queue) >= mm.min_players \
                 and time.monotonic() - mm.queue[0].since >= mm.delay - 0.005:
             self._form(mm.queue[:mm.match_size])
+        self.sync_feeds()
+
+    def leave_queue(self, account: str) -> None:
+        """The account left the queue (op 39, a new sign-in): the others' windows lose it."""
+        self.prune_queue()
+        self.sync_feeds()
 
     def _form(self, entries: list[QueueEntry]) -> None:
         mm = self.mm
@@ -358,10 +402,14 @@ class LobbyServer:
         log.info("match %d formed: %s", match_id,
                  ", ".join(f"{e.account!r} (session {sid})" for e, sid in zip(entries, roster)))
         now = time.monotonic()
-        for e in entries:                      # every ticket first ...
+        final = {feed_name(self.queue_name(e)): k % 2 for k, e in enumerate(entries)}
+        for k, e in enumerate(entries):        # every ticket first ...
             play = self.status[e.account]
+            view = self.feed_views.pop(e.account, None)
+            if view is not None and view.order_id == play.order_id:
+                self.send_feed_diff(e.account, view, final, f"{len(entries)}/{mm.match_size}")
             play.state, play.since, play.message = IN_MATCH, now, ""
-            play.match_id, play.team = match_id, next(mm.teams)
+            play.match_id, play.team = match_id, k % 2       # team_1, team_2 alternate
             play.session_id = e.conn.session_id or 0
             e.conn.issue_ticket(e.conn.find_profile(e.profile_id), play, roster, save=False)
         mm.save_tickets()
@@ -387,6 +435,66 @@ class LobbyServer:
         else:
             sids = [str(e.conn.session_id or 0) for e in entries]
             mm.placer(match_id, {k: mm.tickets[k] for k in sids if k in mm.tickets}, placed)
+
+    # --- match-making window feed (chat channel 7) --------------------------------------
+    def queue_name(self, e: QueueEntry) -> str:
+        """The queued player's name in the window: the character (profile) it plays."""
+        pr = e.conn.find_profile(e.profile_id) if not e.conn.closed else None
+        return pr["name"] if pr else (self.account_summary(e.account) or (0, e.account))[1]
+
+    def queue_groups(self) -> dict[str, list[QueueEntry]]:
+        """account -> the queued players it would be matched with (queue order, match_size
+        at a time), i.e. what its window lists."""
+        size, queue, out = self.mm.match_size, self.mm.queue, {}
+        for k in range(0, len(queue), size):
+            for e in queue[k:k + size]:
+                out[e.account] = queue[k:k + size]
+        return out
+
+    def prime_feed(self, account: str, order_id: int) -> None:
+        """The client polled its state while queued, so its window is up (lobby_menu
+        on_client_status_received -> show_match_making, which restarts the movie): from now
+        on it gets the feed for this order."""
+        view = self.feed_views.get(account)
+        if view is None or view.order_id != order_id:
+            self.feed_views[account] = FeedView(order_id)
+            self.sync_feeds((account,))
+
+    def sync_feeds(self, accounts=None) -> None:
+        if self.feed is None:
+            self.feed_views.clear()
+            return
+        groups = None
+        for account in list(accounts if accounts is not None else self.feed_views):
+            view = self.feed_views.get(account)
+            play = self.status.get(account)
+            if view is None:
+                continue
+            if play is None or play.state != IN_MATCH_MAKING or play.order_id != view.order_id:
+                del self.feed_views[account]  # left the queue: the window is gone or restarts
+                continue
+            if groups is None:
+                groups = self.queue_groups()
+            group = groups.get(account, [])
+            want = {feed_name(self.queue_name(e)): k % 2 for k, e in enumerate(group)}
+            self.send_feed_diff(account, view, want, f"{len(group)}/{self.mm.match_size}")
+
+    def send_feed_diff(self, account: str, view: FeedView, want: dict, place: str) -> None:
+        """Bring one window from view.shown to `want` (name -> team): one line per change,
+        in the forms lobby_menu::on_match_message_arrived parses (a '#+p' line must carry
+        '#t:[', and every value must fit the client's wchar_t buffers: name 32, queue 16)."""
+        lines = [f"#-p:[ {name} ]" for name, team in view.shown.items() if want.get(name) != team]
+        lines += [f"#+p:[ {name} ]#t:[{team}]" for name, team in want.items()
+                  if view.shown.get(name) != team]
+        if place != view.place:
+            lines.append(f"#q:[{place[:15]}]")
+        view.shown, view.place = dict(want), place
+        for line in lines:
+            try:
+                self.feed(account, FEED_MATCH_MAKING, line)
+            except Exception:  # noqa: BLE001 - chat is optional
+                log.exception("match-making feed for %r failed", account)
+                return
 
     def on_match_event(self, kind: str, session_id: int, match_id: int = 0, result: dict | None = None,
                        **_) -> None:
@@ -591,7 +699,7 @@ class LobbyServer:
         finally:
             conn.closed = True
             self.live_conns.discard(conn)
-            self.mm.queue = [e for e in self.mm.queue if e.conn is not conn]
+            self.leave_queue(conn.account_name)
             writer.close()
             self._forget_idle_status(conn.account_name)
 
@@ -682,6 +790,7 @@ class LobbyConnection:
         elif play.state != SURF_LOBBY_MENU:   # a queue entry died with the old connection
             log.debug("%s: %r returns from state %d", self.peer, self.account_name, play.state)
             self.srv.status[self.account_name] = PlayStatus()
+            self.srv.leave_queue(self.account_name)
         log.info("%s: lobby sign in session_id=%d account=%r (account_id %d)",
                  self.peer, sid, self.account_name, acc["account_id"])
         self.send(bytes([CONNECTION_SUCCESSFUL]))
@@ -699,6 +808,8 @@ class LobbyConnection:
                   "answered" if body is not None else "ignored")
         if body is not None:
             self.status_reply(kind, body)
+        if kind == Q_CLIENT_STATE and self.play.state == IN_MATCH_MAKING:
+            self.srv.prime_feed(self.account_name, self.play.order_id)
         if kind == Q_CLIENT_STATE and self.account_name in self.srv.dirty and self.play.state == SURF_LOBBY_MENU:
             self.srv.dirty.discard(self.account_name)
             self.push_refresh()               # a match result arrived while the client was away
@@ -896,6 +1007,7 @@ class LobbyConnection:
         if play.state != SURF_LOBBY_MENU:
             self.srv.status[self.account_name] = PlayStatus()
             self.push_client_state()
+            self.srv.leave_queue(self.account_name)
 
     # --- 35: inventory ------------------------------------------------------------------
     def on_inventory_action(self, p: bytes) -> None:

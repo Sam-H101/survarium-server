@@ -972,7 +972,7 @@ The `C5` array is `{0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, match_id or 0, 0, 0, 0}` (`
 * Otherwise it reads `sender_name` (`char[32]`: **31 bytes max**), `u8 channel` and `body` (`char[256]`, read with buffer size 255: **254 bytes max**, because of the `len < 255` assert).
 * Then it dispatches on the channel:
   * **7** goes to `lobby_menu::on_match_message_arrived`. This is the match-making feed (`#+p:[ name ]#t:[team]`, `#-p:[ name ]`, `#q:[n]`), never shown as chat (`lobby_menu_ui.cpp:1422-1477`).
-  * **8** goes to `lobby_menu::on_stats_message_arrived`. This is the stats feed: `Player [ name ] #e:[exp]` is shown only to that player and refreshes money and skills; `#pc:[n]` goes to `root.set_games_online` (`lobby_menu_ui.cpp:1479-1531`).
+  * **8** goes to `lobby_menu::on_stats_message_arrived`. This is the stats feed: `Player [ name ] #e:[exp]` is shown only to that player and refreshes money and skills; `#pc:[n]` goes to `root.set_games_online` (`lobby_menu_ui.cpp:1479-1531`). The PoC sends both feeds (12.8).
   * **Any other channel** calls `chat_handler::add_message(channel, text, sender)` and `add_to_recent_list(sender)`. The recent list is skipped in game mode (`chat_handler.cpp:218-226`).
 * In game mode, a channel-5 line is shown red if `network_client::get_player_team(sender_name)` finds the sender on the other team. Otherwise it is prefixed `[st_to_all]` (`chat_handler.cpp:185-210`). The lookup compares against the match's **profile names** (0x92), not account names. [V]
 * **Display filter** (chat.swf `GameChat::got_message`): every line is stored under the main tab and under its own type. It is shown when its type equals the selected tab, or when the main tab is selected outside frame 4, or **in frame 4 (the in-game chat) when its type is 5..9**. In-game players therefore do not see general (1) or private (4) lines until they are back in the lobby. [V bytecode, A: frame 4 = game mode]
@@ -1014,7 +1014,26 @@ Every `CC` ends in `lobby_menu::on_friendship_status_recivied(action)`. [V]
 1. The meaning of the non-match `C5` slots (`-1` for general and system) and how the retail server used them. The PoC ignores everything except slot 5.
 2. The retail failure codes for `CC 00..03`. Only `'4'` is defined by the client; the PoC sends `'0'` for denied.
 3. Whether the retail server echoed to the sender or delivered team chat at all. The client sends neither, so the PoC does neither.
-4. The `#pc:[n]` online counter and the match-making feed on channel 7 are not sent. The client handles both, but nothing requires them.
+4. The retail wording of the `#q:[...]` value (12.8). The client copies it verbatim into the "waiting for players" field; the PoC sends `n/size`.
+5. `root.add_player` argument order: the client passes `(team, {name, icon})` while `match_making.swf` declares `add_player(param1:Object, param2:uint)` and forwards `addPlayer(param1, param2)`, i.e. the object is expected first. If the decompiled order is right, the retail movie throws inside `addPlayer` (`.name` of a number) and the columns stay empty, whatever the server sends. [V source and swf bytecode; A: not run against the real client]
+
+### 12.8 Lobby status feeds on channels 7 and 8 (PoC)
+
+The client never shows channels 7 and 8 as chat (12.4): they carry status lines for the lobby menu. The PoC sends them from the message server (`C9 04 <id 0> "System" <channel> <body>`, so the ignore filter never applies). Wire forms are the ones `lobby_menu_ui.cpp:1414-1532` parses; every value is copied with `wcsncpy_s` into a fixed `wchar_t` buffer, and a value that does not fit terminates the client (invalid parameter), so the limits below are hard.
+
+**Match-making window, channel 7** (`on_match_message_arrived`). Each line may hold one join, one leave and one queue value; the PoC sends one item per line:
+
+| line | effect | limits |
+|---|---|---|
+| `#+p:[ <name> ]#t:[<team>]` | `root.add_player(team, {name, icon: 0})`: column 0 (team A) or 1 (team B); a name already in that column is ignored | name up to the first `" ]"`, < 32 chars; `#t:[` must be present (a join without it dereferences NULL); team < 8 chars, `_wtoi` |
+| `#-p:[ <name> ]` | `root.remove_player(name)`: first match in column A, else B | name < 32 chars |
+| `#q:[<text>]` | `root.set_place(text)`, the field labelled "Ожидание игроков:" (waiting for players) | < 16 chars |
+
+* The window exists for the whole lobby session (loaded before the network client is created, `game.cpp:445-470`). `show_match_making(true)` restarts the movie (empty columns, empty place) whenever the window is shown, i.e. on the first `in_match_making` state of an order. The PoC therefore starts an order's feed only when the client **polls** its state while queued (`request_status_from_server(1000)` after that first state): by then the window is up and a line cannot be wiped by the restart, even though chat and lobby are separate TCP connections.
+* What a waiting player sees: the queued players it would be matched with (the queue in order, `--match-size` at a time), named by the **profile** they queued with, in the team columns the matchmaker will use (alternating within each match, so the first player of every match is team 0), and `#q:[n/size]`. Names are sanitised for the parser: `[`, `]` and `#` become `_`, at most 31 characters.
+* Joins and leaves are sent as diffs when the queue changes (a player queues, discards the order with op 39, disconnects, signs in again, or is matched) and at every poll. When a match forms, every player whose window is up gets the final roster with the real teams and `#q:[n/size]`; the window then switches to the level loading view, which still shows the columns.
+
+**Online counter, channel 8** (`on_stats_message_arrived`): `#pc:[<n>]` with `n` the number of accounts that have a chat connection. It goes to `root.set_games_online(n:uint)` (the status panel's online figure; < 8 chars). The PoC sends it right after `CB` and to every signed-in client when the number changes, coalesced to one broadcast per second. A line that contains `Player [ ` is taken as a match result instead, so the counter is always on a line of its own.
 
 ---
 

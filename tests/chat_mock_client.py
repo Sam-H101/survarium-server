@@ -79,6 +79,9 @@ class ChatModel:
     received: list[ChatLine] = field(default_factory=list)    # 0xC9 that reached the chat UI
     match_making: list[str] = field(default_factory=list)     # channel 7 -> on_match_message_arrived
     stats: list[str] = field(default_factory=list)           # channel 8 -> on_stats_message_arrived
+    mm_teams: tuple = field(default_factory=lambda: ([], []))  # match_making.swf dataA / dataB names
+    mm_place: str = ""                                        # root.set_place
+    games_online: int | None = None                           # root.set_games_online
     friends: list[tuple[int, str, bool]] = field(default_factory=list)
     ignores: list[tuple[int, str]] = field(default_factory=list)
     found: list[tuple[int, str]] = field(default_factory=list)
@@ -194,12 +197,72 @@ class MockChatClient:
         line = ChatLine(channel, name, text, sender_id, sender_type)
         if channel == TEAM2:
             self.m.match_making.append(text)
+            self.on_match_message_arrived(text)
         elif channel == SQUAD:
             self.m.stats.append(text)
+            self.on_stats_message_arrived(text)
         else:
             self.m.lines.append(line)
             self.m.received.append(line)
         return []
+
+    @staticmethod
+    def _copy(src: str, start: int, end: int, size: int) -> str:
+        """wcsncpy_s(wchar_t[size], src + start, end - start): a count that does not fit the
+        buffer is an invalid-parameter error, which terminates the client."""
+        assert end >= start, f"negative copy count {end - start}"
+        assert end - start < size, f"{end - start} characters overflow wchar_t[{size}]"
+        return src[start:end]
+
+    def on_match_message_arrived(self, text: str) -> None:   # lobby_menu_ui.cpp:1422-1477
+        try:
+            joined, left, queue = text.find("#+p:[ "), text.find("#-p:[ "), text.find("#q:[")
+            if joined >= 0:
+                end = text.find(" ]", joined)
+                assert end >= 0, "no ' ]' after '#+p:[ ' (wcsstr returns NULL)"
+                name = self._copy(text, joined + 6, end, 32)
+                team_at = text.find("#t:[")
+                assert team_at >= 0, "'#+p' without '#t:[' dereferences NULL"
+                team_end = text.find("]", team_at)
+                assert team_end >= 0, "no ']' after '#t:['"
+                team = int(self._copy(text, team_at + 4, team_end, 8) or 0)   # _wtoi
+                # root.add_player(team, {name, icon}): LobbyGameSearch.addPlayer de-duplicates by name
+                column = self.m.mm_teams[1 if team else 0]
+                if name not in column:
+                    column.append(name)
+            if left >= 0:
+                end = text.find(" ]", left)
+                assert end >= 0, "no ' ]' after '#-p:[ '"
+                name = self._copy(text, left + 6, end, 32)
+                for column in self.m.mm_teams:              # removePlayer: dataA first, then dataB
+                    if name in column:
+                        column.remove(name)
+                        break
+            if queue >= 0:
+                end = text.find("]", queue)
+                assert end >= 0, "no ']' after '#q:['"
+                self.m.mm_place = self._copy(text, queue + 4, end, 16)
+        except AssertionError as e:
+            self.m.faults.append(f"match-making line {text!r}: {e}")
+
+    def on_stats_message_arrived(self, text: str) -> None:   # lobby_menu_ui.cpp:1479-1532
+        try:
+            if "Player [ " in text:
+                return                                       # the match-result branch
+            at = text.find("#pc:[")
+            if at >= 0:
+                end = text.find("]", at)
+                assert end >= 0, "no ']' after '#pc:['"
+                value = self._copy(text, at + 5, end, 8)
+                self.m.games_online = int(value)            # set_games_online(param1:uint)
+        except (AssertionError, ValueError) as e:
+            self.m.faults.append(f"stats line {text!r}: {e}")
+
+    def show_match_making(self) -> None:
+        """lobby_menu::show_match_making(true): the movie restarts with empty columns."""
+        self.m.mm_teams[0].clear()
+        self.m.mm_teams[1].clear()
+        self.m.mm_place = ""
 
     def on_friendship(self, rd: Reader) -> list[bytes]:
         action = rd.r("B")

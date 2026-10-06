@@ -315,12 +315,13 @@ class TestPlay(LobbyTestBase):
         ammo = next(e for e in t["loadout"] if e["slot"] == ld.AMMO1_W1)
         self.assertEqual(ammo["amount"], ammo["condition_or_stack"])
         self.assertEqual(len(bytes.fromhex(t["player_profile_hex"])), 0x1B8)
-        # second player lands on the other team
+        # a second player alone after the fill timeout: a match of its own, which starts at team 0
+        # again (teams alternate within a match; test_chat checks a shared one)
         c2 = await self.client(8)
         await c2.send(pk_ready(c2.m.profiles[2]["profile_id"]))
         await c2.pump(lambda m: m.connect_to_match is not None, timeout=5)
-        self.assertEqual(c2.m.connect_to_match[3], 1)
-        self.assertEqual(lobby.get_match_ticket(8)["team"], 2)
+        self.assertEqual(c2.m.connect_to_match[2:], (2, 0))
+        self.assertEqual(lobby.get_match_ticket(8)["team"], 1)
         # The client drops the lobby TCP when it reaches the match and reconnects while it
         # plays: the lobby keeps it in_match (state 3) until the match server reports the
         # session gone (see test_reconnect for the real-client sequence) ...

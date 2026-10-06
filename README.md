@@ -108,6 +108,11 @@ once the lobby is up (it retries every 3 s after a failure, without affecting th
   lobby and private lines appear once you are back in the lobby.
 - Friends, ignore list and player search (lobby menu) work and are saved in
   `state/chat_state.json`. The online flag is the one at the time the list was fetched.
+- Lobby status lines (spec 12.8), carried by chat and never shown as chat: while you
+  wait in the match-making window it lists the players you would be matched with in
+  their team columns and `n/size` waiting (channel 7, `#+p`/`#-p`/`#q`); the status
+  panel shows how many players are online (channel 8, `#pc`). Without chat
+  (`--no-chat`) neither is sent.
 - Text is relayed in the sender's ANSI code page (Windows-1251 on a Russian system).
 
 | Option | Default | Meaning |
