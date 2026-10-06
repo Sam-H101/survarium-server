@@ -63,10 +63,22 @@ lists to the open client. Ladder: Fort-17, TT-33, TOZ-34 free; TOZ-66 at Scaveng
 at 400; AK-74u, TOZ-122 free; Uzi and Magnum at Black Market 500, Vityaz and Remington 700 at 800 (about 3 to
 11 matches). A match is worth roughly 200-400 experience, 250-950 money and 40-90 reputation per trader.
 
+Items (`docs/match_protocol.md` section 11.8): booby traps are placed when the quick-slot key
+is released (look at the ground within about 1.2 m), fire on an enemy who steps on them
+(broken legs), and are disarmed by an enemy or their owner holding *use* for 5 s while
+crouched and looking at them, or by shooting them; drugs (medkit, bandages, painkiller with
+its damage protection), the lifebone artefact (no broken limbs; its key restores hands and
+legs) and the oxygen tank (back-slot key) work as in the client's item code. What a player
+fires and uses is gone for the rest of the match and is taken out of the account afterwards.
+
 Known limitations: players are simple capsules (not hit boxes) and bullets fly straight
 (no drop or travel time, a ricochet ends the shot); movement is trusted, not simulated;
-booby traps, the painkiller damage protection and scopes are not simulated; medkits are
-approximated.
+scopes are not simulated; the server has no stamina, carried weight, movement-speed or
+anomaly model, so boosters 4, 5, 6 and 8 and the drugs' stamina regeneration change nothing
+on the server, and the oxygen tank and anomaly booster protect only against damage the
+server never deals. Trap placement and triggering use the bullet collision and a foot
+radius instead of the client's walker collision and physics sensor; drug healing is spread
+per server tick; a spawn fills the magazines without taking those rounds from the stack.
 
 Level collision: the server loads `match/data/level_03.collision` (37 MB, built from the
 game data, coverage in `match/data/level_03.collision.json`). It is extracted from the game's

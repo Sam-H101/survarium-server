@@ -373,8 +373,8 @@ The dispatch is in `game/sources/network_client_handler.cpp:20-60`. The retail j
 | 0x93 | team_bases | u32 count, then count × {u32 point_id, u32 owner_team, u32 team_points, u32 capture_progress} | `game/sources/game_world_ui.cpp:131-148`. For level_03 send count 0. |
 | 0x94 | initialize_victory_items | s8 team1_pts, s8 team2_pts, u8 n, then n × {u8 holder (0xFF = lying in the world), u8 item_idx, float3 pos}, then u8 containers, then per container {u8 container_id, u8 k, k × u8 item_idx} | `:236-284` (retail checked) |
 | 0x95 | victory_item_take_or_put | **Retail layout:** u8 player_id, u8 item_idx, bool is_take, u8 container_id (0xFF = none), then a float3 only if `!is_take && container == 0xFF` (the client ignores it) | The decompiled source at `:384-443` is wrong; this follows retail rva 0x5b53d0. |
-| 0x96 | trap_placed | u8 player, u8 slot, u8 trap_index, float3 pos, float3 angles | `:683-693` |
-| 0x97 / 0x98 / 0x99 | trap_removed / fired / disarmed | u8 player, u8 slot, u8 trap_index | `:695-723` |
+| 0x96 | trap_placed | u8 player, u8 slot, u8 trap_index, float3 pos, float3 angles | `:683-693`. The server decides placement (11.8); slot must hold a trap set, index < its stack size; every client does `--m_amount`. |
+| 0x97 / 0x98 / 0x99 | trap_removed / fired / disarmed | u8 player, u8 slot, u8 trap_index | `:695-723`. 0x97 only for a trap that is in the world (11.8). |
 | 0x9a | game_status_changed | u32 status: 0 inactive, 1 waiting_for_first_player, 2 waiting_for_players, 3 final_countdown, 4 inprocess | Retail 0x5b5b30. Status 4 hides the pregame UI and, if time-synced, attaches the local player. A first status of 1..3 shows the pregame UI and the warm-up camera (`game/sources/game_status.h`). |
 | 0x9b | match_wait_time_changed | u32 seconds | Pregame label: "final countdown" if status is 3, otherwise "waiting for players" (`:303-308`). |
 | 0x9c | game_world_object_state | u8 player, u8 slot, u8 trap_index, u8 trap_state (0 removed, 1 armed, 2 fired, 3 disarmed), float3 pos, float3 angles | No NULL check on the player. `base_player.cpp:93`, `booby_trap_set_core.cpp:312`, `booby_trap_core.cpp:339` |
@@ -677,9 +677,8 @@ client sources for this milestone; [A] = an assumption or approximation.
   thresholds, regeneration after `regeneration_timeout`), including the armour modifiers of
   `player_parameters_modifyer_cook` (per body part and hit type the items' armor/reduce/
   absorption are *summed* and *replace* the base values) and the pain-health / regeneration
-  boosters. A player dies when the death affect (0) is applied to any part. Medkit-type quick
-  slots heal over `activity_time` after `activation_delay` [A]; damage protectors (painkiller,
-  anomaly boosters) are not modelled. [V] `damage_model.cpp`, `body_part_parameters.cpp`,
+  boosters. A player dies when the death affect (0) is applied to any part. Drugs, the
+  lifebone, the oxygen tank, damage protectors and the other boosters: 11.8. [V] `damage_model.cpp`, `body_part_parameters.cpp`,
   `hit_type_parameters.cpp`, `player_parameters_cook.cpp`
 * **0x8a** is sent for each affect the server model applies/recalls/cancels, except death, to
   the clients *other than the victim's*: the victim's own damage model is `type_apply_directly`
@@ -796,6 +795,108 @@ recoil PRNG/timing shifts the server's shot by the difference (typically < 1 deg
 * **Unhandshaked endpoints.** A remote endpoint that does not send a valid 0x40 within
   15 s is dropped (it would otherwise get a keep-alive every 33 ms for 120 s), and at most
   256 such endpoints exist at once. [A]
+
+### 11.8 Items: booby traps, drugs, artefacts, oxygen tank, boosters, consumption
+
+The item class comes from the config's `data.type` (`item_types_enum.h`, `items_cook.cpp`):
+0 medkit (all three drugs), 1 oxygen tank (back slot), 2 booby trap set, 3 lifebone. The
+v0.100b dictionary has no other usable item (no anomaly protectors, no other artefacts).
+Code: `match/items.py` (records, geometry) and `Match` in `match/game.py`.
+
+**Booby traps.** In a networked match the client never places, fires or defuses a trap:
+`booby_trap_set::action` calls `try_place_trap` only without bandwidth (offline),
+`booby_trap::register_tick` (which runs the collision sensor) and `defuse_completed` return
+early with bandwidth, and the trap state changes only through 0x96-0x99 / 0x9c
+(`game/sources/booby_trap.cpp`, `booby_trap_set.cpp`). [V] The server therefore does all of it:
+
+* *Wire.* The slot byte must name a slot holding a booby trap set (the handler
+  `static_cast`s whatever item is there) and the index must be below the set's trap count,
+  which is the u8 of the slot's `condition_or_stack` in 0x92 (`inventory_cook.cpp:91-93`,
+  `booby_trap_set_core_cook`). 0x96 also does `--m_amount` on every client, so the 0x84 amount
+  the server sends next already counts it. 0x97 for a trap that is not in the world calls
+  `remove_game_world_object` on it: never sent. [V]
+* *Place* on the rising edge of a quick slot's **up** bit (0x8000 << 2k; key release =
+  `action(false)`), alive, in process, amount > 0, a free trap index: a ray from the eye along
+  the view (look animation pitch, no recoil), `max_deploy_distance` (2 m) long, must hit an
+  upward face within `max_slope_angle` (30 deg) whose game material may hold a mine
+  (`game.materials` `mine.can_place`, `material_can_place_test`). Standing, the 2 m ray reaches
+  the ground up to about 1.17 m ahead. Position = hit point; rotation =
+  `create_place_matrix_for_looking_point` (up = surface normal, forward follows the view);
+  angles = `get_angles(rotation_zxy)` as `booby_trap_core::serialize` writes them (the client
+  rebuilds with `create_rotation(angles)`; both agree on level ground). [A] the decompiled
+  `get_visible_place_transform` tests read inverted (they return false on success), the server
+  follows their evident intent; the client ray uses the walker collision (0x404/0x202), the
+  server the bullet collision cache; no `recover_from_penetrations` nudge; without a level cache
+  the ground is the plane through the player's feet.
+* *Trigger.* While armed, every alive player whose feet are inside the sensor box (config
+  `collision_sensor`: 0.25 x 0.1 x 0.25 half extents at +0.12 m) grown by a 0.15 m foot radius,
+  at most 0.3 m below it, takes the `damage_parameters` hits (right_foot 1, left_foot 1, pain
+  1.5, injury, armour piercing 1) as 0x89 with the owner as initiator and the trap's dict id in a
+  resulting 0x83; then the trap fires: 0x98, and after `fired_life_time` (3 s) 0x97
+  (`booby_trap_core::on_enter`, `switch_to_state`, `on_state_timer_finished`). Broken feet put
+  leg damage (affect 4) on both legs. [A] the foot model; the client sensor has no team filter,
+  the server lets the owner and his team trigger it only with `--friendly-fire`.
+* *Defuse with use.* While the use bit is held and the 1 m ray from the eye
+  (`s_usable_objects_detection_distance`) meets the trap's usable box, the owner or an enemy
+  (`can_defuse`) defuses it after `defuse_time` (5 s) x (1 + engineer_use_time booster / 100) of
+  the player's own clock; releasing or looking away starts over (`use_initialize/execute/
+  finalize`). From a standing eye 1 m does not reach the ground: crouch and look down. Then
+  0x99, and 0x97 after `disarmed_life_time` (3 s). [A] the boxes are axis aligned.
+* *Defuse by hit* (`defuse_by_hit`): a round that reaches the trap's hittable box (0.125 x 0.05 x
+  0.125) before any player or wall disarms it (`booby_trap_core::hit`); the round stops there [A].
+* *Lifetime.* `armed_life_time` 0 = armed until triggered. A player's (re)spawn 0x84 and the
+  hidden-body 0x84 of a player who left make every client remove that player's traps
+  (`player::remove` -> `inventory::remove` -> `booby_trap_set::remove`); the server forgets them
+  silently. A client that joins later gets one 0x9c per active trap after the owner's 0x84
+  (`booby_trap_core::deserialize` inserts without touching the amount).
+
+**Drugs** (medkit, bandages, painkiller; `medkit.cpp`). The quick slot's **down** bit runs
+`medkit::action(true)`: nothing while this slot's drug is active (`m_active`), else one item
+less. The damage protectors register at once and stay until the activity ends
+(`set_active`): the painkiller's pain/injury hits become (amount - 0) x 0.2 for 6 s
+(1 s delay + 5 s). After `activation_delay` the `remove_affects` are cancelled and the
+`influences` heal amount/`activity_time` per second [A: spread per server tick].
+`add_stamina_regen` is not simulated (the server has no stamina; 0x84 always sends full
+stamina).
+
+**Lifebone** (`artefact_lifebone_core.cpp`): passive for the whole match from the moment the
+inventory gets its holder: its protector blocks hand damage (3) and leg damage (4) on
+left/right hand and leg, damage itself passes. Its quick-slot key resets those four parts
+(full health, affects dropped) without spending anything (`amount` -1 = unlimited; the
+config's `cooldown_ms` is never checked by `action`). 0x84 has no bytes for it.
+
+**Oxygen tank** (back slot, `oxygen_tank.cpp`): the back-slot key (0x4000000) toggles it while
+time is left (60 s, spent only while on); while on, intoxication on `infection` is
+(amount - 10) x 0 and irradiation on `radiation` (amount - 15) x 0.5. The server deals no
+anomaly damage (level_03 anomalies are not simulated), so this only matters if such damage is
+added.
+
+**Affect events to the other clients.** A read-only (remote) damage model handles only
+"applying" and "recalling" in `body_part_parameters::apply_affect_by_force`; "canceling" is
+ignored. A medkit's cancelled affects and the lifebone's reset are therefore sent as recalling
+(1), which removes them on the other clients. [V]
+
+**Boosters** (`player_parameters_modifyer::apply`, ids from `boosters_enum.h`):
+
+| id | booster | server |
+|---|---|---|
+| 1, 2 | dispersion, aiming speed | shot model (11.6) |
+| 3, 7 | health regeneration, pain health | damage model |
+| 9 | anomaly damage | `add_damage_protector` x (1 + v/100) for irradiation, ambustion, intoxication, electric_shock (no such damage on the server yet) |
+| 10 | engineer use time | trap defuse time |
+| 4 | stamina regeneration | not simulated (no server stamina) |
+| 5 | movement speed | not simulated (movement is client-authoritative, section 6) |
+| 6 | additional max weight | not simulated (the server has no carried-weight model) |
+| 8 | artefact container search time | not simulated (no anomalies / artefact containers on the server) |
+| 11 | engineer success chance | loaded by the client, never used by any client code |
+
+**Consumption.** Every round fired is counted against the ammo slot it came from, every drug
+used, trap placed and limited lifebone charge against its quick slot (`Player.used`). A new
+life gets min(`condition_or_stack`, `amount_in_inventory` - used) per ammo/quick slot, as
+`inventory::setup_from_profile` gives the client after `unload_to_profile` returned only the
+remainder. [A] a spawn still fills the weapons' magazines without taking the rounds from the
+slot (the server's earlier behaviour); those rounds count once fired. The match result carries
+`used` (14.4) and the lobby takes it out of the account.
 
 
 ---
@@ -1014,7 +1115,7 @@ At about 90 Scavengers reputation per match (more with kills and wins) level 1 t
 
 ### 14.4 Match server -> lobby
 
-`MatchCore.on_event(kind, session_id=, match_id=, result=)`: `result` (`Match.player_result`) comes with `match_finished` (a lobby match was removed; one per roster player) and with `session_ended` once the match is finished (the player left after the final whistle), and is paid once per (session, match) by `LobbyServer.award_match`. Fields: `team, finished, won, draw, present_at_end` (connected when the match finished)`, kills, deaths, items_stored, play_s` (connected seconds while the round ran). Over worker processes the event is `("event", kind, session_id, match_id, result)`. A worker that dies reports `match_finished` without a result and pays nothing.
+`MatchCore.on_event(kind, session_id=, match_id=, result=)`: `result` (`Match.player_result`) comes with `match_finished` (a lobby match was removed; one per roster player) and with `session_ended` once the match is finished (the player left after the final whistle), and is paid once per (session, match) by `LobbyServer.award_match`. Fields: `team, finished, won, draw, present_at_end` (connected when the match finished)`, kills, deaths, items_stored, play_s` (connected seconds while the round ran), `used` (a list of `{slot, id, dict_id, count}`: rounds fired and items used per profile slot, at most what the slot held; `LobbyServer.apply_usage` takes them off that item's stack, clears an emptied slot, finds an item moved to storage by id or its stack by dict id, and does so even when the result pays nothing; the next menu refresh re-sends storage and profiles). Over worker processes the event is `("event", kind, session_id, match_id, result)`. A worker that dies reports `match_finished` without a result and pays nothing.
 
 ### 14.5 Weapons in the match server
 
