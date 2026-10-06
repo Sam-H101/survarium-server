@@ -435,6 +435,9 @@ class LobbyServer:
         if acc is None:
             return None
         self.store.account(account)                      # migrates an account of an older version
+        if self.apply_usage(account, acc, match_id, result.get("used") or ()):
+            self.store.save()
+            self.dirty.add(account)
         reward = self.prog.reward(result)
         if not reward:
             log.info("match %d: %r earns nothing (%s)", match_id, account, reward.reason)
@@ -465,6 +468,42 @@ class LobbyServer:
             if conn.account_name == account and not conn.closed and (play is None or play.state == SURF_LOBBY_MENU):
                 conn.push_refresh()
         return reward
+
+    def apply_usage(self, account: str, acc: dict, match_id: int, used) -> bool:
+        """Take what the match consumed out of the account (Match.used_items: rounds fired,
+        drugs used, traps placed per profile slot): the stack in that slot shrinks and an
+        emptied slot is cleared, as inventory::unload_to_profile leaves it. An item moved
+        to storage since then is found there by id, a merged stack by dict_id."""
+        changed = False
+        for e in used:
+            try:
+                iid, dict_id, count = int(e["id"]), int(e["dict_id"]), int(e["count"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            where, key = None, None
+            for pr in acc["profiles"]:
+                for k, it in pr["slots"].items():
+                    if it["id"] == iid:
+                        where, key = pr["slots"], k
+            if where is None:
+                storage = acc["storage"]
+                it = next((x for x in storage if x["id"] == iid), None) or \
+                    next((x for x in storage if x["dict_id"] == dict_id), None)
+                if it is None:
+                    continue
+                it["cond"] = max(0, it["cond"] - count)
+                if it["cond"] == 0:
+                    storage.remove(it)
+            else:
+                it = where[key]
+                it["cond"] = max(0, it["cond"] - count)
+                if it["cond"] == 0:
+                    del where[key]
+            changed = True
+            log.info("match %d: %r used %d x %s", match_id, account, count, self.gd.item_label(dict_id))
+        return changed
 
     def _announce(self, account: str, acc: dict, match_id: int, reward: progression.Reward,
                   before_rep: dict[int, int], level_before: int, level: int, gained: int) -> None:
@@ -669,7 +708,8 @@ class LobbyConnection:
         and experience only after it sees the stats chat line while connected, reputation
         and the per-trader price lists (items unlock) never, so the server sends them."""
         for kind, arg in ((Q_ACCOUNT_MONEY, None), (Q_PLAYER_SKILLS, None), (Q_PLAYER_REPUTATIONS, None),
-                          *((Q_PRICE_ITEMS, t) for t in SHOP_TRADERS)):
+                          *((Q_PRICE_ITEMS, t) for t in SHOP_TRADERS),
+                          (Q_ENUMERATE_INVENTORY, None)):    # items the match used up (it re-reads the profiles)
             self.status_reply(kind, self.status_body(kind, arg))
 
     def status_body(self, kind: int, arg: int | None) -> bytes | None:

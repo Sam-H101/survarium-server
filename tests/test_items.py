@@ -30,8 +30,10 @@ from match import combat as C  # noqa: E402
 from match import items as I  # noqa: E402
 from match import messages as M  # noqa: E402
 from match.game import USE_BIT  # noqa: E402
+from test_lobby import LobbyTestBase  # noqa: E402
 from test_m3 import FIRE, Lobbyless, m3_config  # noqa: E402
 from test_match import DATA  # noqa: E402
+from test_progression import result  # noqa: E402
 
 AK, AMMO_545 = 13, 7
 PAINKILLER, BANDAGES, MEDKIT, TRAP, LIFEBONE, OXYGEN = 65, 66, 67, 68, 54, 9
@@ -472,6 +474,40 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(a.local["weapons"][13], 1)
         self.assertEqual(a.local["weapons"][14], 1)
         self.assertEqual(a.faults + b.faults, [])
+
+
+class LobbyUsageTest(LobbyTestBase):
+    async def test_used_items_leave_the_account(self):
+        c = await self.client()
+        acc = self.lobby.store.doc["accounts"]["tester"]
+        slots = acc["profiles"][0]["slots"]
+        self.assertEqual((slots["11"]["id"], slots["11"]["cond"]), (1007, 90))     # 5.45 x 90
+        self.assertEqual((slots["8"]["id"], slots["8"]["cond"]), (1005, 30))       # 7.62 x 30
+        pk = next(it for it in acc["storage"] if it["dict_id"] == PAINKILLER)
+        used = [{"slot": 11, "id": 1007, "dict_id": AMMO_545, "count": 40},
+                {"slot": 8, "id": 1005, "dict_id": 51, "count": 30},        # the whole stack
+                {"slot": 13, "id": pk["id"], "dict_id": PAINKILLER, "count": 1}]  # moved to storage
+        self.lobby.on_match_event("match_finished", 7, 5, result=result(used=used))
+        self.assertEqual(slots["11"]["cond"], 50)
+        self.assertNotIn("8", slots)                         # an emptied slot is cleared
+        self.assertEqual(pk["cond"], 2)
+        # paid once per (session, match)
+        self.lobby.on_match_event("session_ended", 7, 5, result=result(used=used))
+        self.assertEqual(slots["11"]["cond"], 50)
+        # the menu is told: storage, then the profiles it re-reads
+        await c.pump(lambda m: any(s.get("id") == 1007 and s["cond"] == 50
+                                   for p in m.profiles for s in p.get("slots", {}).values()))
+        prof = next(p for p in c.m.profiles if p["profile_id"] == acc["profiles"][0]["profile_id"])
+        self.assertNotIn(8, prof["slots"])
+        self.assertEqual(next(i["cond"] for i in c.m.inventory if i["id"] == pk["id"]), 2)
+
+    async def test_a_result_without_reward_still_takes_the_items(self):
+        await self.client()
+        acc = self.lobby.store.doc["accounts"]["tester"]
+        slots = acc["profiles"][0]["slots"]
+        used = [{"slot": 11, "id": 1007, "dict_id": AMMO_545, "count": 10}]
+        self.lobby.on_match_event("match_finished", 7, 6, result=result(play_s=5, used=used))
+        self.assertEqual(slots["11"]["cond"], 80)
 
 
 if __name__ == "__main__":
