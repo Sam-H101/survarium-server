@@ -359,7 +359,7 @@ The dispatch is in `game/sources/network_client_handler.cpp:20-60`. The retail j
 | 0x82 | server_player_input | u32 time_in_ms, then **1 or more** × {u8 player_id, float2 ang_vel, float2 ang_acc, u32 actions_mask, float3 pos, f32 yaw, f32 pitch, u8 weapon_slot_id, u8 ammo_slot_id, u8 weapon_state}. Each entry is 44 bytes; ≤5 fit in one message. | Read with `do…while(!eof)`, so at least one entry is required (`network_client_handler.cpp:27-35`). A dead player's transform is snapped; an alive player goes through `time_warp` (section 6). An unknown id is logged and skipped (`network_client_processing.cpp:492-516`, `server_player_update.cpp`, `weapon_state.cpp:27-32`). Of the weapon fields, only weapon_slot_id is used. |
 | 0x83 | kill_player | u8 victim, u8 killer, bool headshot, u32 item_dict_id | Kill feed, then `player::kill` if the victim is inserted and alive (`:182-194`). |
 | 0x84 | spawn_player | section 2.4 | Insert or respawn. **Only after 0x42.** |
-| 0x85 | team_base_capture_progress | u32 progress, u32 point_id | HUD (`:286-291`) |
+| 0x85 | team_base_capture_progress | u32 point_id, u32 progress | HUD: `set_base_capture_progress(progress, point_id)` keys `m_base_points` by the FIRST wire field (retail disassembly; the decompiled `:286-291` reads them in the wrong order). No encoder: level_03 has no base points. |
 | 0x86 | match_time_changed | u32 ms | HUD (`:293-296`) |
 | 0x87 | respawn_time_changed | u32 seconds (0 hides it) | HUD only (`:298-301`) |
 | 0x88 | player_kd_stats_changed | u8 id, u32 kills, u32 deaths | HUD (`:368-374`) |
