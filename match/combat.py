@@ -41,6 +41,31 @@ DAMAGE_TYPE_BULLET = "injury"        # bullet::collide_front_face always hits wi
 # boosters_enum ids used by player_parameters_modifyer::apply
 BOOSTER_HEALTH_REGEN = 3
 BOOSTER_PAIN_HEALTH = 7
+BOOSTER_ANOMALY_DAMAGE = 9
+# player_parameters_modifyer::apply: anomaly_damage_corr_perc scales these hit types
+ANOMALY_DAMAGE_TYPES = ("irradiation", "ambustion", "intoxication", "electric_shock")
+
+
+class DamageProtector:
+    """damage_protector: reduce(body part, hit type, amount, armor piercing) -> amount and
+    protect(body part, affect) -> True when the affect may not be applied. Items register
+    one per body part (damage_model::register_body_part_damage_protector)."""
+
+    def __init__(self, reduce=None, protect=None) -> None:
+        self.reduce = reduce
+        self.protect = protect
+
+
+def threshold_protector(hit_type: str, hit_coeff: float, threshold: float) -> DamageProtector:
+    """medkit::reduce_damage / oxygen_tank::reduce_damage for one (body part, hit type):
+    0 below the threshold, else (amount - threshold) * hit_coeff; other hit types pass."""
+    def reduce(part: str, htype: str, amount: float, ap: float) -> float:
+        if htype != hit_type:
+            return amount
+        if threshold > amount:
+            return 0.0
+        return (amount - threshold) * hit_coeff
+    return DamageProtector(reduce)
 
 
 # =============================================================================== damage
@@ -65,6 +90,7 @@ class _BodyPart:
                           for k, v in p.hit_types.items()}
         self.thresholds = p.thresholds
         self.affects: List[Tuple[int, int]] = []         # (affect, expiry time)
+        self.protectors: List[DamageProtector] = []      # kept across damage_model::reset
 
     def reset(self) -> None:
         self.health = self.max_health
@@ -87,6 +113,8 @@ class DamageModel:
             self.parts[p.name] = _BodyPart(p)
             self.order.append(p.name)
         self.events: List[Tuple[str, int, int]] = []     # (part, affect, event) since last drain
+        # damage_model::m_damage_protectors: per hit type (reduce, absorb), from boosters
+        self.type_protectors: Dict[str, List[float]] = {}
         self._apply_modifiers(armour, boosters or {})
         self.reset()
 
@@ -108,6 +136,30 @@ class DamageModel:
         scale = 1.0 + boosters.get(BOOSTER_HEALTH_REGEN, 0.0) / 100.0
         for part in self.parts.values():
             part.regeneration_speed *= scale
+        anomaly = boosters.get(BOOSTER_ANOMALY_DAMAGE, 0.0)
+        if anomaly != 0.0:
+            for htype in ANOMALY_DAMAGE_TYPES:
+                self.add_type_protector(htype, 1.0 + anomaly / 100.0, 0.0)
+
+    def add_type_protector(self, hit_type: str, reduce: float, absorb: float) -> None:
+        """damage_model::add_damage_protector: one booster_damage_protector per hit type;
+        a second call multiplies reduce and adds absorb."""
+        p = self.type_protectors.get(hit_type)
+        if p is None:
+            self.type_protectors[hit_type] = [reduce, absorb]
+        else:
+            p[0] *= reduce
+            p[1] += absorb
+
+    def register_protector(self, part_name: str, protector: DamageProtector) -> None:
+        part = self.parts.get(part_name)
+        if part is not None and protector not in part.protectors:
+            part.protectors.append(protector)
+
+    def unregister_protector(self, part_name: str, protector: DamageProtector) -> None:
+        part = self.parts.get(part_name)
+        if part is not None and protector in part.protectors:
+            part.protectors.remove(protector)
 
     def reset(self) -> None:
         """damage_model::reset (player::insert_alive)."""
@@ -137,12 +189,14 @@ class DamageModel:
     def hit(self, part_name: str, damage_type: str, amount: float, armor_piercing: float,
             now_ms: int) -> None:
         part = self.parts[part_name]
-        self._hit_by_type(part, damage_type, now_ms, amount, armor_piercing)
+        self._hit_by_type(part, damage_type, now_ms, amount, armor_piercing,
+                          self.type_protectors.get(damage_type))
 
     def _hit_by_type(self, part: _BodyPart, hit_type: str, now_ms: int, amount: float,
-                     armor_piercing: float) -> None:
-        """body_part_parameters::hit_by_type (no damage protectors: those come only from
-        anomaly boosters and active painkillers, see the module limitations)."""
+                     armor_piercing: float, prot: Optional[List[float]] = None) -> None:
+        """body_part_parameters::hit_by_type: armour, then the part's protectors (each only
+        while the amount is > 0), then the hit type's booster protector (direct hits only:
+        the bdb hits of apply_damage pass NULL)."""
         params = part.hit_types[hit_type]
         if params.armor == 0.0:
             arp_arm_coeff = 1.0
@@ -151,7 +205,12 @@ class DamageModel:
         e_wnd = max(0.0, arp_arm_coeff)
         delta = amount * e_wnd + max(0.0, (1.0 - params.reduce) * amount * (1.0 - e_wnd)
                                      - params.absorption)
+        for protector in part.protectors:
+            if delta > 0.0 and protector.reduce is not None:
+                delta = protector.reduce(part.name, hit_type, delta, armor_piercing)
         delta = max(0.0, delta)
+        if prot is not None:
+            delta = max(0.0, delta * prot[0] - prot[1])      # booster_damage_protector
         part.health = min(max(part.health - delta, 0.0), part.max_health)
         part.last_hit_time = now_ms
         self._check_affects(part, now_ms)
@@ -168,7 +227,10 @@ class DamageModel:
                 if target is None:
                     continue
                 for affect in affects:
-                    if not target.has_affect(affect):
+                    # body_part_parameters::apply_affects: not applied yet, no protector
+                    if not target.has_affect(affect) and not any(
+                            p.protect is not None and p.protect(target.name, affect)
+                            for p in target.protectors):
                         self.events.append((target.name, affect, AFFECT_APPLYING))
                         target.affects.append((affect, now_ms + 1000 * AFFECT_DURATIONS_S[affect]))
 
@@ -194,6 +256,18 @@ class DamageModel:
         part = self.parts.get(part_name)
         if part is not None:
             part.health = min(max(part.health + amount, 0.0), part.max_health)
+
+    def reset_part(self, part_name: str) -> None:
+        """body_part_parameters::reset (artefact_lifebone_core::activate_impl): full
+        health, no affects. The client drops the affects silently; the events here only
+        tell the other clients' read-only copies (see Match._send_affects)."""
+        part = self.parts.get(part_name)
+        if part is None:
+            return
+        for affect, _ in part.affects:
+            if affect != AFFECT_DEATH:
+                self.events.append((part.name, affect, AFFECT_CANCELING))
+        part.reset()
 
     def cancel_affect(self, part_name: str, affect: int) -> None:
         part = self.parts.get(part_name)
