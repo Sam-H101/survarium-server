@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ class ItemInfo:
     allowed_slots: Tuple[int, ...]
     clip_size: int = 0
     has_chamber: bool = False
+    item_type: Optional[int] = None               # cfg data.type (ITEM_TYPE_*), if any
 
 
 @dataclass
@@ -106,6 +108,56 @@ class MedkitInfo:
     delay_ms: int
     influences: Tuple[Tuple[str, float], ...]     # (body part, total health amount)
     remove_affects: Tuple[Tuple[str, int], ...]
+    damage_protection: Tuple["DamageProtection", ...] = ()
+    add_stamina_regen: float = 0.0                # the server does not simulate stamina
+
+
+@dataclass
+class DamageProtection:
+    """medkit damage_protection / oxygen_tank influences (medkit::reduce_damage,
+    oxygen_tank::reduce_damage): a hit_type hit on body_part becomes 0 below threshold,
+    otherwise (amount - threshold) * hit_coeff."""
+    body_part: str
+    hit_type: str
+    hit_coeff: float
+    threshold: float
+
+
+@dataclass
+class TrapInfo:
+    """gameplay/items/base_trap: data (booby_trap_set_core::load, booby_trap_core::load).
+    Boxes are (centre offset, half extents) in the trap's frame."""
+    max_distance: float = 2.0
+    max_slope_cos: float = 0.866
+    armed_life_ms: int = 0                    # 0: armed until something triggers it
+    fired_life_ms: int = 3000
+    disarmed_life_ms: int = 3000
+    defuse_ms: int = 5000
+    defuse_by_hit: bool = True
+    material_can_place_test: bool = True
+    material_can_stick_test: bool = False
+    damage: Tuple[Tuple[str, str, float, float], ...] = ()   # (body part, hit type, amount, ap)
+    sensor: Tuple[Tuple[float, float, float], Tuple[float, float, float]] = ((0.0, 0.12, 0.0), (0.25, 0.1, 0.25))
+    usable: Tuple[Tuple[float, float, float], Tuple[float, float, float]] = ((0.0, 0.12, 0.0), (0.25, 0.1, 0.25))
+    hittable: Tuple[Tuple[float, float, float], Tuple[float, float, float]] = ((0.0, 0.12, 0.0), (0.125, 0.05, 0.125))
+
+
+@dataclass
+class LifeboneInfo:
+    """gameplay/items/artefacts/lifebone: data (artefact_lifebone_core::load_core)."""
+    amount: int = -1                          # -1: unlimited
+    cooldown_ms: int = 0                      # loaded, but action() never checks it
+
+
+@dataclass
+class OxygenTankInfo:
+    """gameplay/items/armour/back/*oxygen*: data (oxygen_tank::load)."""
+    amount_ms: int
+    influences: Tuple[DamageProtection, ...]
+
+
+# cfg data.type (item_types_enum.h)
+ITEM_TYPE_MEDKIT, ITEM_TYPE_OXYGEN_TANK, ITEM_TYPE_TRAP, ITEM_TYPE_LIFEBONE = 0, 1, 2, 3
 
 
 @dataclass
@@ -154,7 +206,10 @@ class GameData:
         self.weapons: Dict[int, WeaponInfo] = {}
         self.ammo: Dict[int, AmmoInfo] = {}
         self.armour: Dict[int, dict] = {}
-        self.medkits: Dict[int, MedkitInfo] = {}
+        self.medkits: Dict[int, MedkitInfo] = {}          # every data.type 0 item (drugs)
+        self.traps: Dict[int, TrapInfo] = {}
+        self.lifebones: Dict[int, LifeboneInfo] = {}
+        self.oxygen_tanks: Dict[int, OxygenTankInfo] = {}
         for dict_id, info in self.items.items():
             raw = _load_raw(info.cfg_name)
             if raw is None:
@@ -173,15 +228,29 @@ class GameData:
                                               float(d.get("ricochet_angle", 0)))
             elif "/armour/" in info.cfg_name and isinstance(raw.get("hit_params"), dict):
                 self.armour[dict_id] = raw["hit_params"]
-            elif "/drugs/" in info.cfg_name:
-                d = raw.get("data", {})
-                act = max(0.001, float(d.get("activity_time_sec", 1)))
-                infl = d.get("influences") or []
-                rem = d.get("remove_affects") or []
+            d = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+            if info.kind == ITEM_WEAPON or not isinstance(d.get("type"), (int, float)):
+                continue
+            # the item class comes from data.type (items_cook::create_item_and_finish_query)
+            info.item_type = int(d["type"])
+            if info.item_type == ITEM_TYPE_MEDKIT:
+                act = max(0.001, float(d.get("activity_time_sec", 1)))     # medkit::load
                 self.medkits[dict_id] = MedkitInfo(
-                    int(1000 * act), int(1000 * float(d.get("activation_delay_sec", 0))),
-                    tuple((e["body_part"], float(e["amount"])) for e in infl),
-                    tuple((e["body_part"], int(e["affect"])) for e in rem))
+                    int(math.floor(1000 * act)),
+                    int(math.floor(1000 * float(d.get("activation_delay_sec", 0)))),
+                    tuple((e["body_part"], float(e["amount"])) for e in _entries(d.get("influences"))),
+                    tuple((e["body_part"], int(e["affect"])) for e in _entries(d.get("remove_affects"))),
+                    _protections(d.get("damage_protection")),
+                    float(d.get("add_stamina_regen", 0)))
+            elif info.item_type == ITEM_TYPE_TRAP:
+                self.traps[dict_id] = _trap_info(d)
+            elif info.item_type == ITEM_TYPE_LIFEBONE:
+                self.lifebones[dict_id] = LifeboneInfo(int(d.get("amount", -1)),
+                                                       int(d.get("cooldown_ms", 0)))
+            elif info.item_type == ITEM_TYPE_OXYGEN_TANK:
+                self.oxygen_tanks[dict_id] = OxygenTankInfo(
+                    int(math.floor(1000.0 * float(d.get("amount_time_sec", 0)))),
+                    _protections(d.get("influences")))
         self.body_parts = _hit_params(_load_raw("gameplay/hit_params/human_hit_params.options"))
         # character_dispersion_params / character_recoil_params of every match player
         self.character = (_load_raw("gameplay/players/default.player") or {}).get("player", {})
@@ -333,6 +402,50 @@ def _weapon_info(raw: dict) -> WeaponInfo:
                       "chamber_a_round" in states, bool(p.get("chamber_a_round_on_reload")),
                       raw.get("dispersion"), raw.get("recoil"),
                       bool(p.get("double_handed", True)))
+
+
+def _entries(v) -> list:
+    """A config array; the JSON export writes an empty table as {}."""
+    return [e for e in v if isinstance(e, dict)] if isinstance(v, list) else []
+
+
+def _protections(v) -> Tuple[DamageProtection, ...]:
+    return tuple(DamageProtection(e["body_part"], e["hit_type"], float(e.get("hit_coeff", 1)),
+                                  float(e.get("threshold", 0))) for e in _entries(v))
+
+
+def _box(cfg: dict, key: str, default):
+    """(centre offset, half extents) of the first mesh of collision geometry `key`
+    (collision_geometry::load -> create_compound_shape(meshes); a box mesh's scale is
+    its half extents, physics animated_rigid_body.cpp:78-81)."""
+    try:
+        g = cfg[key]
+        if "collision_geometries" in g:
+            g = g["collision_geometries"][0]
+        mesh = g["meshes"][0]
+        return tuple(map(float, mesh["position"]["float3"])), tuple(map(float, mesh["scale"]["float3"]))
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _trap_info(d: dict) -> TrapInfo:
+    """booby_trap_set_core::load: times are floor(seconds * 1000), the slope limit is
+    cos(deg2rad(max_slope_angle))."""
+    t = TrapInfo()
+
+    def ms(key: str) -> int:
+        return int(math.floor(1000.0 * float(d.get(key, 0))))
+
+    return TrapInfo(
+        float(d.get("max_deploy_distance", t.max_distance)),
+        math.cos(math.radians(float(d.get("max_slope_angle", 30)))),
+        ms("armed_life_time"), ms("fired_life_time"), ms("disarmed_life_time"), ms("defuse_time"),
+        bool(d.get("defuse_by_hit", False)), bool(d.get("material_can_place_test", False)),
+        bool(d.get("material_can_stick_test", False)),
+        tuple((e["body_part"], e["hit_type"], float(e["amount"]), float(e["armor_piercing"]))
+              for e in _entries(d.get("damage_parameters"))),
+        _box(d, "collision_sensor", t.sensor), _box(d, "usable_object", t.usable),
+        _box(d, "hittable_object", t.hittable))
 
 
 def _hit_params(raw: Optional[dict]) -> List[BodyPartParams]:
